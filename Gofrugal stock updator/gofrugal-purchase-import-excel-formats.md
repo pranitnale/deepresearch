@@ -2,6 +2,13 @@
 
 **Source:** Screenshots of GOFRUGAL RetailEasy → *Purchase Entry → Excel Mapping & Importing*, store "RANJIT BAZAAR", GRN Type = **Direct**, FormulaID = 3. Captured by the store owner from their own installation → **primary, authoritative** (supersedes the earlier "CONFIRM"-tagged field guesses in `gofrugal-invoice-ocr-feasibility-research.md`).
 
+**Original screenshots** (saved for future context) — in `screenshots/`:
+- `gofrugal-purchase-import-01-standard.png`
+- `gofrugal-purchase-import-02-serialized.png`
+- `gofrugal-purchase-import-03-matrix.png`
+- `gofrugal-purchase-import-04-kit.png`
+- `gofrugal-purchase-import-05-non-matrix.png`
+
 This is the **write-back format** for the agent: the agent's final output is an Excel file in one of these layouts, imported into a GRN/Purchase Entry.
 
 ---
