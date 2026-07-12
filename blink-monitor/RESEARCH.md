@@ -182,6 +182,18 @@ Tauri plugin behaviors (notification/autostart/single-instance/tray), EcoQoS API
 
 ---
 
+## 6a. Pressure-test round (2026-07-12, PRD v1.0 → v1.1)
+
+Two further Opus 4.8 agents ran against PRD v1.0: an implementer red-team (38 findings: 9 blockers, 16 high, 13 medium/minor — all adjudicated, 36 accepted, 2 corrected) and an API-surface verifier (primary sources: crates.io, docs.rs, GitHub source). Key verified facts that changed the design:
+
+- **openvino-rs 0.11:** `compile_model` takes `DeviceType` (composite strings pass via `Other`), but exposes **no per-compile properties** — properties are set per device on `Core` (`RwPropertyKey::{CacheDir, HintPerformanceMode}`); the **`runtime-linking`** feature builds without the OpenVINO SDK and `dlopen`s at `Core::new()` — chosen as the shipping model. The PRD dropped `AUTO:NPU,CPU` in favor of explicit NPU→CPU two-step compile (avoids loading the ~40 MB CPU plugin when the NPU works — RAM-budget protection).
+- **Tauri (verified versions 2026-07-12):** tauri 2.11.5, plugin-notification 2.3.3, plugin-autostart 2.5.1, plugin-single-instance 2.4.2; `windows: []` starts window-less; `close()` emits interceptable `CloseRequested`, `destroy()` force-closes; notifications work from Rust with no window; Tauri's default Windows manifest already carries **Common-Controls v6** (needed by TaskDialogIndirect) but nothing else — a custom manifest must re-add it alongside PerMonitorV2 DPI.
+- **nokhwa 0.10.11 (tag source):** MSMF supports NV12/YUYV/MJPEG/GRAY/RGB24; `RequestedFormatType::{Exact,Closest,...}` confirmed; open issues document wrong-frame-rate negotiation on Windows → PRD mandates software pacing by wall clock.
+- **tracing-appender 0.2.5:** time-based rotation only, `max_log_files(n)` for retention (no size cap — PRD wording fixed). **rusqlite 0.40.1** `bundled` statically links SQLite. **uPlot 1.6.32.**
+- OpenCV `face_detect.cpp` (fetched): YuNet preprocessing = `blobFromImage` defaults (0–255 BGR, no normalization); score = `sqrt(min(cls,1)·min(obj,1))` (upper clamp only); box `exp` decode and landmark decode confirmed; NMS eta=1.0.
+
+The single genuine design contradiction found: Camera-Guard "hold continuously" vs pause-on-lock/idle. Resolution (PRD §7.1 hold matrix): **idle keeps the camera held** with inference stopped; **lock releases it** — deliberately, since holding the RGB camera through the lock screen could block Windows Hello face sign-in — with guard events deferred and alerted at unlock.
+
 ## 7. Final decision summary
 
 | Decision | Choice | Runner-up |
