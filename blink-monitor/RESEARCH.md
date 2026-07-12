@@ -79,6 +79,14 @@ Their outputs were then **independently re-verified** (by Fable 5, the orchestra
 
 **Total model payload: ~280 KB.** Steady-state inference ≈ 1–2 ms/frame on one CPU core at 10–15 FPS (estimate from GFLOPs; measure with `benchmark_app` on the target machine — no first-party per-model benchmark exists for Core Ultra 7).
 
+### How well-validated are these two models? (added 2026-07-12)
+
+**YuNet — strongly validated.** It is a peer-reviewed model: Wu, Peng & Yu, *"YuNet: A Tiny Millisecond-level Face Detector"*, [Machine Intelligence Research 20(5):656–665, 2023](https://link.springer.com/article/10.1007/s11633-023-1423-y) — 75,856 parameters, 81.1% mAP single-scale on the WIDER Face *hard* validation track, 1.6 ms/frame at 320×320 on an i7-12700K. It is also the face detector OpenCV ships as `FaceDetectorYN`, i.e. deployed and exercised at very large scale. The repo-published WIDER AP figures (0.8844 easy / 0.8656 medium / 0.7503 hard) were re-verified from the [opencv_zoo README](https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/README.md). Our use case — one large, roughly frontal face at ≤ 1 m — sits in the "easy" regime where its AP is highest.
+
+**open-closed-eye-0001 — adequately documented, but vendor-reported only.** Its 95.84% accuracy comes from Intel's own README, measured on the held-out test split (every 10th image) of the same MRL Eye Dataset it was trained on; **no independent third-party benchmark of this specific model was found**. In its favor: MRL's ~85k infrared/visible eye crops deliberately include glasses, reflections and low light, the interface/preprocessing/architecture were verified directly (§6 ledger), and the model is tiny enough that replacing it is cheap. This is exactly why the PRD (a) makes the per-frame signal go through a hysteresis state machine rather than trusting single frames, (b) ships a calibration screen + sensitivity slider, (c) gates release on an on-device accuracy test (≥ 90% precision and recall, PRD §23.4), and (d) keeps a MediaPipe-blendshape backend (Apache-2.0, robustness-oriented) as the designed fallback (PRD §20).
+
+**What "verified" means in this report:** licenses, tensor interfaces, file identities (hashes) and published accuracy claims were independently confirmed against primary sources; neither model has been *run* during research (this sandbox has no camera or Intel hardware) — runtime accuracy validation is deliberately built into milestones M2/M3 and acceptance test #4.
+
 **License flag:** InsightFace detector/landmark packs are non-commercial-research-only — excluded; nothing in the chosen pipeline touches them. Open Model Zoo itself is deprecated (frozen at OpenVINO 2025.0, [notice](https://docs.openvino.ai/2024/documentation/legacy-features/model-zoo.html)) but the model files remain published and Apache-licensed; the PRD vendors them into the repo so the app never depends on Intel's storage staying up.
 
 ### Blink-rate science (product thresholds)
@@ -109,6 +117,15 @@ Relaxed adult blink rate ≈ **15–20/min**; during screen use it commonly drop
 - **Camera-in-use detection:** `HKCU\...\CapabilityAccessManager\ConsentStore\webcam[\NonPackaged]\*` — an app whose `LastUsedTimeStart` is set with `LastUsedTimeStop == 0` currently holds the camera.
 - The Windows **privacy indicator** will show whenever the app holds the camera — surfaced honestly in the product UX.
 - Power hygiene APIs: session lock `WTSRegisterSessionNotification`/`WM_WTSSESSION_CHANGE`; user idle `GetLastInputInfo`; **EcoQoS** via `SetProcessInformation(ProcessPowerThrottling)` ([Introducing EcoQoS](https://devblogs.microsoft.com/performance-diagnostics/introducing-ecoqos/)), exposed in the `windows` crate.
+
+### Camera exclusivity & the "Camera Guard" requirement (added 2026-07-12)
+
+The product requirement "block any other app from the camera until I approve" maps onto Windows like this:
+
+- **The block itself is free:** with Win11's opt-in "multi-app camera" (24H2+) disabled — the default — camera access through the Frame Server is effectively exclusive, so *while our app holds the device, the OS rejects every other app's open attempt*. Holding the camera **is** the block.
+- **Interception is impossible in user mode:** Windows exposes no API to observe another process's *failed/attempted* camera open, nor to approve/deny it. Doing so would require a kernel-mode camera filter driver (security-product territory: driver signing, servicing burden) — rejected. Consequently the approval flow must be **release-based** (user approves releasing the camera for a period), not intercept-based, and this limitation is stated in the PRD, README, and UI copy.
+- **Successful sessions are observable in near-real-time:** the CapabilityAccessManager ConsentStore registry keys record per-app `LastUsedTimeStart/Stop`; `RegNotifyChangeKeyValue` on those keys yields an event-driven watcher that identifies which app has the camera — this powers the guard alert popup and the auto-reclaim-when-they're-done behavior (PRD §7.1).
+- Residual caveats, all carried into PRD §7.1/§22: 24H2 multi-app sharing (if the user enables it) defeats exclusivity — detected and warned, not fixable programmatically; kernel/admin-level software can bypass any user-mode guard; Windows Hello IR sensors are separate devices; the OS camera privacy indicator stays lit while we hold the camera.
 
 ---
 

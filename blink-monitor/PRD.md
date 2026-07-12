@@ -18,6 +18,7 @@ A Windows 11 tray application that watches the user through the laptop's built-i
 - G4: Zero network I/O, ever. All data local. Frames never persisted.
 - G5: Configurable reminders: Windows toast, subtle overlay, sound — independently toggleable, repeat-with-cooldown.
 - G6: Persistent history + trends dashboard; monitoring toggle in one click from the tray.
+- G7: **Camera Guard** (§7.1): while monitoring, the app holds the camera so the OS blocks all other apps; other apps get camera access only after the user explicitly approves a timed release in our UI; any successful camera use by another app raises an immediate alert.
 
 ### Non-goals (v1)
 - macOS/Linux, gaze tracking, drowsiness detection, posture, multiple simultaneous cameras, auto-update (forbidden by G4), cloud anything, MSIX/Store packaging.
@@ -153,10 +154,27 @@ Ship these DLLs from the OpenVINO 2026.2.x Windows archive distribution next to 
 - Format ladder (first success wins): 640×360 @ 15 fps → 640×480 @ 15 → 640×360 @ 30 (then process every 2nd frame) → 1280×720 @ 10. Prefer NV12/YUY2; accept MJPG last (decode via nokhwa). Convert to BGR8 once per frame into a reusable buffer (no per-frame allocation).
 - Analysis pacing: process at most `analysis_fps` (§16, default 15) frames/s; drop extras.
 - Camera selection: `camera_id = "auto"` → last-used if present, else first enumerated. If the selected camera disappears (unplug): switch to any other available camera, set tray state *active*, log an `event` row (§15), show one toast "Switched to <name>". If none: tray state *no-camera*, retry enumeration every 15 s.
-- **Camera-busy handling** (policy `camera_conflict_policy`, §16):
-  - Detection: open failure/device-busy error from MSMF **plus** the ConsentStore probe (`HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam` and `...\webcam\NonPackaged`: any subkey with `LastUsedTimeStart != 0 && LastUsedTimeStop == 0` and not our own exe ⇒ busy).
-  - `pause` (default): release device, tray state *camera-busy*, mark gap in DB (`sessions.end_reason = 'camera_busy'`), poll ConsentStore every 15 s, resume when free.
-  - `share`: keep/attempt capture anyway (works only if Win11 24H2 multi-app camera is enabled); if open fails, behave as `pause` for that interval.
+- **Camera access policy** `camera_conflict_policy` ∈ `guard` (default) | `pause` | `share` — full Guard spec in §7.1:
+  - `guard`: hold the device continuously; other apps are blocked by the OS; explicit approve-to-release flow; other-app camera use raises an alert.
+  - `pause`: yield to other apps. Detection: open failure/device-busy error from MSMF **plus** the ConsentStore probe (see §7.1 watcher). On busy: release device, tray state *camera-busy*, mark gap in DB (`sessions.end_reason = 'camera_busy'`), poll every 15 s, resume when free.
+  - `share`: keep/attempt capture concurrently (works only if Win11 24H2 multi-app camera is enabled); if open fails, behave as `pause` for that interval.
+
+### 7.1 Camera Guard (`power.rs::guard`, default policy)
+
+**Mechanism — what Windows actually allows (be precise in code comments and docs):**
+- While this app holds the camera and Windows' opt-in **"multi-app camera"** (Win11 24H2+, off by default) is disabled, camera access is **exclusive: the OS itself rejects every other app's open attempt** ("camera is in use"). The hold *is* the block — no extra privilege needed.
+- Windows has **no supported user-mode API** to (a) observe another app's *failed/attempted* camera open or (b) veto/approve it. (That would need a kernel camera filter driver — explicitly out of scope.) Therefore the approval flow is **release-based**, not intercept-based, and the UI copy must never claim interception.
+- What we *can* observe in near-real-time: **successful** camera sessions of other apps, via `RegNotifyChangeKeyValue` on `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam` and `...\webcam\NonPackaged` (subkey with `LastUsedTimeStart != 0 && LastUsedTimeStop == 0` ⇒ that app has the camera now; subkey name = packaged app family name or exe path).
+
+**Behavior:**
+1. **Hold:** monitoring active ⇒ device held (that's the existing capture loop; in guard mode, *never* auto-release on conflict).
+2. **Watcher (always running, all policies, even while paused):** registry-notification loop on both ConsentStore keys. On another app's session **start**: emit `guard_alert {app, exe_path, ts}` → toast + native always-on-top alert dialog (`TaskDialogIndirect`, comctl32 via `windows` crate — *not* a WebView) with buttons **[Block — reclaim camera] [Allow for 30 min] [Open dashboard]**; if the dashboard is open, also an in-app modal via the `guard_alert` event. Log to `events(kind='camera_guard')`.
+3. **Approve/release flow:** user asks (tray "Release camera…" → 15/30/60 min / until-I-resume, dashboard button, or alert-dialog "Allow"): release device, pause monitoring with `sessions.end_reason='camera_released'`, tray state *released*, watcher armed. When the borrowing app's `LastUsedTimeStop` is written **or** the timer expires (whichever is later; recheck every 30 s): reclaim by reopening, resume monitoring, toast "Camera reclaimed — monitoring resumed."
+4. **Reclaim ("Block" button):** attempt immediate reopen. If exclusive access is restored → done (the other app loses/never gets frames per OS arbitration; typically it simply cannot reopen once we hold it again). If reopen fails because the other app still holds it: retry every 5 s up to 60 s, then notify "Could not reclaim — <app> is still using the camera" with [Retry] [Release for 30 min].
+5. **Sharing-enabled anomaly:** if the watcher sees another app's session start while we *hold* the device (only possible when 24H2 multi-app camera is ON), the alert dialog must add: "Windows' multi-app camera sharing is enabled, so holding the camera cannot block other apps. Turn it off in Settings ▸ Bluetooth & devices ▸ Cameras ▸ <camera> ▸ Advanced." Do not attempt to flip that setting programmatically (no documented API).
+6. **Device-loss while holding:** capture error ⇒ immediate reopen attempt; if it fails and ConsentStore shows another app active → treat as step 2 alert.
+
+**Honest limits (must appear in README and the dashboard's Camera page):** Guard is a *convenience/awareness* control, not a security boundary — admin-level or kernel-level software can bypass it, it does not cover other cameras we are not holding (incl. Windows Hello IR sensors), and the physical shutter remains the strongest protection when not monitoring. The Windows camera privacy LED/indicator stays on while we hold the camera — expected and documented.
 
 ---
 
@@ -251,7 +269,7 @@ On fire: trigger each enabled style, insert `reminders` row, set `last_reminder`
 
 ## 13. Lifecycle, pause/resume & power hygiene (`power.rs`, `worker/mod.rs`)
 
-Monitoring state machine: `Active ⇄ Paused(reason)` where reason ∈ `user_toggle | session_locked | idle | camera_busy | no_camera | snooze(does NOT pause monitoring, only reminders)`.
+Monitoring state machine: `Active ⇄ Paused(reason)` where reason ∈ `user_toggle | session_locked | idle | camera_busy | camera_released | no_camera | snooze(does NOT pause monitoring, only reminders)`.
 
 - **User toggle:** tray menu + dashboard switch. Persisted (`monitoring_enabled`) — app starts in the last state.
 - **Session lock:** `WTSRegisterSessionNotification` → `WM_WTSSESSION_CHANGE` (`WTS_SESSION_LOCK/UNLOCK`): always pause/resume (camera off while locked).
@@ -265,8 +283,8 @@ Monitoring state machine: `Active ⇄ Paused(reason)` where reason ∈ `user_tog
 ## 14. Tray (`tray.rs`)
 
 - Left-click: open (create) dashboard window. Right-click menu:
-  `Monitoring ✓ (toggle)` · `Snooze reminders → 30 min / 1 h / 2 h / until I resume` · `Open dashboard` · `Start with Windows ✓ (toggle)` · `Quit`.
-- Icon states (4 distinct 16/32 px icons): **active** (eye), **paused** (eye with pause bars), **camera-busy/no-camera** (eye with slash), **error** (eye with !). Tooltip: `Nictate — {bpm}/min` refreshed at most every 5 s, or state description.
+  `Monitoring ✓ (toggle)` · `Release camera → 15 min / 30 min / 1 h / until I resume` (§7.1) · `Snooze reminders → 30 min / 1 h / 2 h / until I resume` · `Open dashboard` · `Start with Windows ✓ (toggle)` · `Quit`.
+- Icon states (5 distinct 16/32 px icons): **active** (eye), **paused** (eye with pause bars), **released** (eye with open-lock badge), **camera-busy/no-camera** (eye with slash), **error** (eye with !). Tooltip: `Nictate — {bpm}/min` refreshed at most every 5 s, or state description.
 - Autostart: `tauri-plugin-autostart` (HKCU Run). **Re-assert the registry value on every launch** when the setting is on (mitigates plugins-workspace bug #771).
 - Single instance: `tauri-plugin-single-instance` registered **before** any other plugin; second launch focuses/creates the dashboard.
 
@@ -288,7 +306,7 @@ CREATE TABLE minute_stats(
 CREATE TABLE sessions(                    -- monitoring segments
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   start_ts INTEGER NOT NULL, end_ts INTEGER,
-  end_reason TEXT);                       -- user_toggle|session_locked|idle|camera_busy|no_camera|quit
+  end_reason TEXT);                       -- user_toggle|session_locked|idle|camera_busy|camera_released|no_camera|quit
 CREATE TABLE reminders(ts INTEGER PRIMARY KEY, styles TEXT NOT NULL, bpm REAL NOT NULL);
 CREATE TABLE events(ts INTEGER, kind TEXT, detail TEXT);                   -- device switch, fallback, errors
 ```
@@ -304,7 +322,7 @@ CREATE TABLE events(ts INTEGER, kind TEXT, detail TEXT);                   -- de
 |---|---|---|
 | `monitoring_enabled` | bool | true |
 | `camera_id` | `"auto"` \| MSMF symbolic link | `"auto"` |
-| `camera_conflict_policy` | `"pause"` \| `"share"` | `"pause"` |
+| `camera_conflict_policy` | `"guard"` \| `"pause"` \| `"share"` (§7.1) | `"guard"` |
 | `analysis_fps` | 5–30 | 15 |
 | `inference_device` | `"auto"` (AUTO:NPU,CPU) \| `"cpu"` \| `"npu"` | `"auto"` |
 | `threshold_bpm` | 4–20 | 8 |
@@ -333,8 +351,8 @@ Pages (left nav): **Dashboard · History · Settings · Camera · About**
 
 ## 18. IPC surface (`ipc.rs`) — complete list
 
-Commands (request/response): `get_live_stats` → `{bpm, state, device_active, camera_name, today: {...}}` · `get_history(range)` → minute/hour aggregates · `get_sessions(range)` · `get_settings` / `set_settings(patch)` (validates ranges, persists, notifies worker) · `list_cameras` · `start_preview(camera_id)` / `stop_preview` · `set_monitoring(bool)` · `snooze(minutes)` · `delete_all_history`.
-Events (worker → UI, only while a window exists): `stats_tick` (1 Hz) · `preview_frame` (base64 JPEG + detection metadata, ≤ 15 Hz) · `state_changed`.
+Commands (request/response): `get_live_stats` → `{bpm, state, device_active, camera_name, today: {...}}` · `get_history(range)` → minute/hour aggregates · `get_sessions(range)` · `get_settings` / `set_settings(patch)` (validates ranges, persists, notifies worker) · `list_cameras` · `start_preview(camera_id)` / `stop_preview` · `set_monitoring(bool)` · `snooze(minutes)` · `release_camera(minutes | "until_resume")` / `reclaim_camera` (§7.1) · `get_guard_events(range)` · `delete_all_history`.
+Events (worker → UI, only while a window exists): `stats_tick` (1 Hz) · `preview_frame` (base64 JPEG + detection metadata, ≤ 15 Hz) · `state_changed` · `guard_alert {app, exe_path, ts}` (§7.1).
 
 ---
 
@@ -368,7 +386,9 @@ While active: encode the current BGR frame downscaled to 320×180 as JPEG qualit
 | nokhwa/MSMF format quirks on specific cameras | `CaptureBackend` trait + §7 format ladder + direct-MF fallback backend. |
 | NPU driver absent/old (needs recent Intel NPU driver; in-plugin compile needs ≥ v2565) | `AUTO:NPU,CPU` + explicit CPU recompile fallback (§8.1); `device_active` visible in UI; never crash on NPU failure. |
 | openvino-rs 0.11 missing a needed property API | Acceptable to skip `cache_dir`; if device-string compile itself is blocked, drop to `openvino-sys`/C API for that call. |
-| Classifier weak on heavy glasses/low light | Sensitivity slider (§9); calibration screen for verification; §20 backend as designed escape hatch. |
+| Classifier weak on heavy glasses/low light | Sensitivity slider (§9); calibration screen for verification; §20 backend as designed escape hatch. **Note:** its 95.84% accuracy is Intel-reported on the MRL test split only — no independent benchmark exists; on-device validation is acceptance test #4. |
+| Guard mode misunderstood as interception | §7.1 mandates release-based semantics in all UI copy; alert covers only *successful* sessions; README states the kernel-driver limitation and physical-shutter caveat. |
+| Win11 24H2 multi-app camera sharing defeats the exclusive hold | Watcher detects concurrent sessions and the alert instructs the user to disable sharing (§7.1 step 5); no programmatic toggle exists. |
 | WinUI-style RAM creep | Architecture rules R1/R2; acceptance tests below. |
 
 ## 23. Acceptance criteria (all must pass on the target laptop before "done")
@@ -379,7 +399,8 @@ While active: encode the current BGR frame downscaled to 320×180 as JPEG qualit
 4. Blink accuracy self-test: 5 min at normal posture, manually count blinks on simultaneous phone video; app-vs-truth **recall ≥ 90%, precision ≥ 90%**; repeat with glasses if available (record result either way).
 5. NPU: with `inference_device=auto` on the Core Ultra 7, About shows NPU active (and Windows Task Manager NPU graph shows activity); with driver disabled or `cpu` forced, app behaves identically (silent fallback, `events` row logged).
 6. Reminders: threshold 20 + cooldown 60 s → reminder fires within 70 s of sustained low rate, repeats on cooldown, respects snooze and grace; all three styles verified.
-7. Camera: unplug external cam mid-run → auto-switch + toast; occupy camera with the Windows Camera app → `pause` policy pauses and auto-resumes; lock screen → pauses; idle 5 min → pauses, instant resume on input.
+7. Camera: unplug external cam mid-run → auto-switch + toast; with policy `pause`, occupy camera with the Windows Camera app → pauses and auto-resumes; lock screen → pauses; idle 5 min → pauses, instant resume on input.
+7a. **Guard (default policy):** while monitoring, opening the Windows Camera app (and one conferencing app, e.g. Zoom/Teams) fails with a camera-in-use error and Nictate keeps monitoring; tray "Release camera → 30 min" lets the other app open it, a `guard_alert` fires identifying that app, and after it closes (or the timer, whichever is later) Nictate auto-reclaims and resumes with a toast; "Block — reclaim" after a release restores the hold within 60 s of the other app exiting. Verify multi-app sharing OFF and note the §7.1-step-5 warning fires if it is ON.
 8. Kill the process; relaunch → history intact, settings intact, autostart intact.
 9. Installer (NSIS via `tauri build`): per-user install, no admin, Start-Menu shortcut, branded toast works from installed build; uninstall leaves no running process (DB may remain, documented).
 
@@ -390,12 +411,12 @@ While active: encode the current BGR frame downscaled to 320×180 as JPEG qualit
 - **M3 NPU:** device selection (§8.1), `AUTO:NPU,CPU`, fallback path, `device_active` IPC; measure and record CPU-vs-NPU wattage/latency on the target machine in `README` (benchmark_app + Task Manager).
 - **M4 Reminders:** engine (§11), toast, overlay (§12), sound, snooze, fullscreen suppression.
 - **M5 Dashboard:** all five pages, uPlot charts, calibration preview (§19), settings hot-apply.
-- **M6 Hardening:** power hygiene (§13), camera-busy/switch flows, retention, packaging (NSIS + DLL bundling §6.3), full acceptance run (§23).
+- **M6 Hardening:** power hygiene (§13), **Camera Guard + release/reclaim/alert flows (§7.1)**, camera-busy/switch flows, retention, packaging (NSIS + DLL bundling §6.3), full acceptance run (§23).
 
 Each milestone ends with a code review against this PRD and general Rust/TS best practices (performed by the orchestrating model), and all tests green.
 
 ## 25. Dependency manifest (exhaustive — C3 gate)
 
-**Rust:** `tauri = 2`, `tauri-plugin-single-instance`, `tauri-plugin-notification`, `tauri-plugin-autostart` (all v2 line, MIT/Apache) · `openvino = 0.11` (Apache-2.0) · `nokhwa = 0.10.11` feat `input-msmf` (Apache-2.0) · `rusqlite` feat `bundled` (MIT) · `windows` (MIT/Apache; features: `Win32_System_Threading`, `Win32_System_RemoteDesktop`, `Win32_UI_WindowsAndMessaging`, `Win32_Graphics_Gdi`, `Win32_Media_Audio`, `Win32_UI_Shell`, `Win32_System_Registry`, `Win32_UI_Input_KeyboardAndMouse`) · `crossbeam-channel` (MIT/Apache) · `serde`/`serde_json` (MIT/Apache) · `png` (MIT/Apache) · `image` (MIT — JPEG encode only) · `tracing` + `tracing-appender` (MIT, rotating file log in `%LOCALAPPDATA%\Nictate\logs`, 5 MB cap) · `anyhow`/`thiserror` (MIT/Apache).
+**Rust:** `tauri = 2`, `tauri-plugin-single-instance`, `tauri-plugin-notification`, `tauri-plugin-autostart` (all v2 line, MIT/Apache) · `openvino = 0.11` (Apache-2.0) · `nokhwa = 0.10.11` feat `input-msmf` (Apache-2.0) · `rusqlite` feat `bundled` (MIT) · `windows` (MIT/Apache; features: `Win32_System_Threading`, `Win32_System_RemoteDesktop`, `Win32_UI_WindowsAndMessaging`, `Win32_Graphics_Gdi`, `Win32_Media_Audio`, `Win32_UI_Shell`, `Win32_System_Registry`, `Win32_UI_Input_KeyboardAndMouse`, `Win32_UI_Controls` for the §7.1 TaskDialog) · `crossbeam-channel` (MIT/Apache) · `serde`/`serde_json` (MIT/Apache) · `png` (MIT/Apache) · `image` (MIT — JPEG encode only) · `tracing` + `tracing-appender` (MIT, rotating file log in `%LOCALAPPDATA%\Nictate\logs`, 5 MB cap) · `anyhow`/`thiserror` (MIT/Apache).
 **JS:** `vite` (MIT), `typescript` (Apache-2.0), `uplot` (MIT). **Nothing else without updating this table.**
 **Explicitly forbidden:** any HTTP/socket crate, `tauri-plugin-updater`, `tauri-plugin-http`, telemetry/crash-reporting SDKs, Electron, Python runtime, InsightFace models, GPL/AGPL code (Slint GPL tier included), `face_detection_yunet_2026may.onnx`.
