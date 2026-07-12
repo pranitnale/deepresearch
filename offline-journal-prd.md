@@ -9,9 +9,9 @@
 
 ## 1. Vision
 
-A journaling app for exactly one person and three devices — a Windows PC, a Samsung Galaxy S23 Ultra, and a Galaxy Tab S9 — that **never connects to the internet**. All data lives encrypted on the user's own devices, syncs automatically and quickly whenever two devices share the same Wi-Fi network (no hub, no cloud, no interaction), supports handwriting with the S Pen, and hides a "secret" tier of notes behind a vault that is invisible in normal use. When the user later runs their own VPS, the same data layer must be able to sync through it by changing configuration — not architecture.
+A **pen-first** journaling app for exactly one person and three devices — a Windows PC, a Samsung Galaxy S23 Ultra, and a Galaxy Tab S9 — that **never connects to the internet**. Most entries are handwritten with the S Pen and kept as ink, so the writing surface must deliver near-native pen latency and ink quality. All data lives encrypted on the user's own devices, syncs automatically and quickly whenever two devices share the same Wi-Fi network (no hub, no cloud, no interaction), and hides a "secret" tier of notes behind a vault that is invisible in normal use. When the user later runs their own VPS, the same data layer must be able to sync through it by changing configuration — not architecture.
 
-**Design principle, in priority order:** Privacy > Correctness (never lose a journal entry) > Convenience > Features.
+**Design principle, in priority order:** Privacy > Correctness (never lose a journal entry) > Pen experience (latency & ink quality) > Convenience > Other features (rich text is explicitly sacrificable).
 
 ## 2. Goals and Non-Goals
 
@@ -21,14 +21,16 @@ A journaling app for exactly one person and three devices — a Windows PC, a Sa
 - **G3 — App lock.** The whole app is locked behind a password/PIN + biometrics; the lock is cryptographic (wraps the database key), not cosmetic.
 - **G4 — Hidden vault.** Vault notes are invisible in every normal view, search, and count until the vault is unlocked; a visible "Vault" section exists but reveals nothing while locked.
 - **G5 — Serverless LAN sync.** Any two of the three devices sync automatically when on the same Wi-Fi, with no user interaction, no always-on hub (phone↔tablet must sync with the PC off), and near-real-time latency when both apps are open.
-- **G6 — S Pen journaling.** Handwrite entries with the S Pen on the S23 Ultra / Tab S9 — either converted to text on-device and offline, or kept as freehand ink with conversion turned off entirely (user's choice, per entry).
+- **G6 — Best-in-class pen writing (a MUST, ranked with G1/G5).** The primary editing surface on Android is a native low-latency ink canvas — handwriting is kept as ink by default, with the lowest latency and best ink quality achievable by a third-party app. On-device Samsung handwriting-to-text remains available per entry, and fully off-switchable.
 - **G7 — Future VPS path.** The sync layer is a pluggable endpoint; pointing it at a self-hosted server later is a configuration change.
-- **G8 — Keep everything Notesnook already does well:** rich-text editor, notebooks/tags/colors, reminders, attachments, full-text search, note history, backups.
+- **G8 — Keep what Notesnook already does well, where it's free:** notebooks/tags/colors, reminders, attachments, full-text search, note history, backups; the rich-text editor is retained as a secondary, feature-frozen surface (see F6).
 
 ### Non-Goals (explicit)
 - **Multi-user, sharing, collaboration, publishing.** Monographs (public publishing) are removed.
 - **Real-time concurrent editing** of the same note on two devices (CRDT). Conflicts are rare for one person; the existing conflict-flag + manual resolution is sufficient.
 - **Custom handwriting-recognition model / "self-learning" ink engine.** Research confirmed no off-the-shelf, offline, personalizable recognizer exists beyond what Samsung ships on-device. We ride Samsung's engine (which does adapt to the user's writing over time) rather than building one. Revisit only if Samsung's engine proves inadequate.
+- **Matching Samsung Notes' ~2.8 ms pen latency.** That figure runs on a privileged Samsung hardware pipeline closed to third parties (their ink SDK is discontinued). Target: the best a third-party app can do (~10–25 ms perceived, own estimate) — visibly close, not identical.
+- **Further rich-text investment.** The TipTap editor is kept as-is for typed notes and viewing but feature-frozen; pen experience wins every trade-off against it.
 - **iOS support.** Devices are Windows + two Samsung Androids.
 - **App-store distribution.** Personal sideloaded APK + local desktop build.
 
@@ -142,48 +144,43 @@ The predicate reuses the correlated relations subquery already built for the `lo
 
 **Acceptance:** create a note on the phone → appears on the foregrounded tablet within ~10 s on the same Wi-Fi, PC powered off, airplane-mode-with-Wi-Fi on both (no mobile data). Edit the same note on two offline devices → conflict flagged, both versions preserved, manual resolution UI works (existing feature). Kill and restart any device mid-sync → no data loss, cursors resume.
 
-### F6 — S Pen Input: Handwriting → Text AND Freehand Ink
+### F6 — Pen-First Ink Editor (THE primary writing surface) + Optional Handwriting → Text
 
-**Requirement:** the S Pen supports **two modes**, switchable per entry, on the S23 Ultra / Tab S9:
-- **F6a — Convert mode:** handwriting is converted to text on-device, offline, with recognition that adapts to the user's handwriting.
-- **F6b — Ink mode:** conversion is off; the user writes freely in their own handwriting and the strokes are **kept as ink** — stored, encrypted, synced, and rendered on all devices like any other note content. Even without any recognition, a page of the user's own handwriting is a first-class journal entry.
+**Priority statement (user decision, 2026-07-12):** most journal content will be handwritten with the S Pen and kept as ink. Pen latency and ink quality are a **must-have on par with privacy and sync**; rich-text features are explicitly sacrificable. Consequently, on Android the primary editing surface is a **native ink editor** — not the WebView. Best-in-class pen performance is physically impossible inside a WebView (JS/compositor tax on every stroke sample); the ink path must be native.
 
-Neither stock Notesnook nor its editor has any ink/drawing support (verified: no canvas/freehand/stylus extension exists anywhere in `packages/editor` or the mobile app) — F6b is net-new work.
+Neither stock Notesnook nor its editor has any ink/drawing support (verified) — this is the largest net-new feature alongside P2P sync.
 
-#### F6a — Convert mode (Samsung Direct Writing)
+#### F6a — Native ink surface (primary, Android)
 
-**Chosen approach (user decision + research verification):** rely on Samsung's system-level **S Pen to text / Direct Writing** (One UI 5.1+, on-device, offline via installable language packs, with vendor-documented adaptation to the user's writing).
+**Chosen stack (research-verified July 2026):** Google's **Jetpack Ink API (`androidx.ink`)** — first stable **1.0.0 shipped 2025-12-17** (latest 1.1.0-alpha04); it is the same production ink engine behind markup in Google Docs, Circle to Search, Photos, Drive, and Keep. Its underpinnings are also stable now: `androidx.graphics:graphics-core` 1.0.4 (front-buffer rendering — wet ink draws directly to the scanned-out buffer, skipping the normal compositing pipeline) and `androidx.input:input-motionprediction` 1.0.0 (Kalman-filter stylus prediction that masks perceived input lag). Do **not** hand-roll the low-latency stack — Ink orchestrates all of it.
 
-**Critical research finding:** Direct Writing does engage on `contenteditable` fields inside Android WebViews (it's default-on at the platform level; Samsung Keyboard must be the active IME) — so it will reach Notesnook's TipTap editor with **zero code**. However, ProseMirror-family editors have well-documented Samsung-IME composition bugs (spurious newlines, dropped characters, scroll jumps — reproduced in ProseMirror, Obsidian, and CKEditor issue trackers). There is no WebView flag that fixes this; the platform switches are already default-on.
+**Architecture:**
+- **`InProgressStrokesView`** (a plain Android View from `ink-authoring`) wrapped as a **React Native Fabric Native Component** — the documented RN 0.82 mechanism for hosting native views. All stylus `MotionEvent` handling, front-buffered wet rendering, and prediction stay in native code; **the RN JS thread never touches the per-sample stroke path.** JS only sends commands (new page, brush, undo, export) and receives serialized stroke bytes back.
+- High-frequency S Pen input: drain batched samples via `MotionEvent.getHistorical*()` + `View.requestUnbufferedDispatch()`; capture 4096-level pressure and tilt (delivered to third-party apps as standard MotionEvent axes on the Tab S9/S23 Ultra). Stylus-only input on the canvas = automatic palm rejection.
+- Dry (finished) strokes render via Ink's `CanvasStrokeRenderer`/`ViewStrokeRenderer`; hit-testing/per-stroke erase via `ink-geometry`.
+- **Storage:** canonical stroke data = a portable format we own (per stroke: brush params + `(x, y, pressure, tilt, t)` point array; Ink's `ink-storage` binary serialization can be kept as an Android-side cache). The portable blob goes **inside the normal note-content blob** — so encryption at rest (F2), hidden vault (F4), LAN P2P sync (F5), backups, and history all apply to ink automatically with zero extra work. Sync moves opaque blobs and is untouched by this pivot.
+- **Desktop (Electron):** replays the portable stroke data — rendered as pressure-sensitive SVG outlines via [perfect-freehand](https://github.com/steveruizok/perfect-freehand) (MIT, actively maintained, Feb 2026). View/erase/light mouse or Windows-pen annotation (Chromium pointer events carry pressure/tilt on Windows); the PC is a reading/typing surface, not the low-latency inking surface.
+- **Journal model:** a note is a sequence of blocks — ink pages interleaved with (optional) typed-text blocks. The TipTap WebView editor is demoted to secondary: kept for typed notes and viewing (it already exists and costs nothing), **feature-frozen** otherwise.
+- Tools for v1: pen (widths/colors from Ink's stock brushes), highlighter, per-stroke eraser, undo/redo, page scroll. No shape recognition, layers, or lasso.
 
-**Therefore, two-stage plan:**
-- **Stage 1 (zero code):** document setup (Samsung Keyboard as default IME, offline handwriting language pack installed, autocorrect/predictive text disabled — much of the corruption is prediction-driven) and dogfood directly in the editor for 2 weeks.
-- **Stage 2 (if Stage 1 is too flaky — likely):** build a **native `EditText` handwriting capture overlay**: a React Native native view (`EditText` is the first-class, rock-solid handwriting target) summoned by an S Pen toolbar button; recognized text is inserted into TipTap at the cursor via the existing RN↔WebView command bridge (`apps/mobile/app/screens/editor/tiptap/commands.ts`). Effort: M (one native module + toolbar button + bridge call).
+**Latency expectation (honest):** Samsung Notes' ~2.8 ms runs on a privileged hardware pipeline no third-party SDK can access (the old S Pen ink SDK is dead; only the button/air-gesture "S Pen Remote SDK" remains). A well-tuned Ink-API surface on the Tab S9's 120 Hz panel realistically lands around **~10–25 ms perceived** (front-buffer floor ~4–16 ms + prediction; comparable measured front-buffered path: 24 ms on a 60 Hz Pixel 7). Verdict: dramatically better than any WebView/Flutter note app, within striking distance of Samsung Notes, not parity. Matching Samsung Notes exactly is declared out of scope (§2).
 
-"Self-learning": Samsung's on-device engine adapts to the user's writing over time; corrections made in the `EditText` before insertion feed that engine. Building our own trainable recognizer stays a non-goal (§2).
+**Known integration risks (budgeted):** (a) touch ownership — the native surface must consume stylus events directly (`requestDisallowInterceptTouchEvent`) so RN's gesture responder can't delay them; (b) SurfaceView-class layer compositing inside the RN view tree (historic z-order issues; using Ink's own view rather than a raw GLSurfaceView inherits Google's correct layer handling); (c) `androidx.ink` is young (stable only since Dec 2025) and we'd be an early third-party adopter — pin to stable 1.0.x, adopt 1.1's ByteArray storage API when it stabilizes.
 
-#### F6b — Ink mode (keep my handwriting as handwriting)
+**Effort:** L (~4–6 weeks: Fabric component + ink module, storage format, page UI, desktop replay renderer).
 
-**Turning conversion off is trivial and needs no app code:** Direct Writing is a system toggle (Settings → Advanced features → S Pen → "S Pen to text", or Samsung Keyboard's handwriting setting). Additionally, an ink canvas is not an editable text field, so the handwriting-to-text IME never triggers on it — ink mode is inherently conversion-free. For belt-and-braces, an in-app "disable handwriting-to-text" setting can call the View-level `setAutoHandwritingEnabled(false)` on the editor WebView.
+#### F6b — Handwriting → text (secondary, optional per entry)
 
-**Implementation — a custom TipTap "ink" block node (recommended):**
-- An `<ink>` node type in `packages/editor` rendering a canvas/SVG surface that can be inserted anywhere in a note and interleaved with text blocks (ideal journaling model: type a paragraph, handwrite a paragraph).
-- Stroke capture via standard PointerEvents in the existing WebView: accept `pointerType === "pen"` only while inking (automatic palm rejection), record `(x, y, pressure, t)` per point — Chromium WebView delivers stylus pressure.
-- Stroke rendering via [perfect-freehand](https://github.com/steveruizok/perfect-freehand) (MIT, ~5.4k stars, actively maintained — last release Feb 2026), which turns pressure-annotated point arrays into natural pressure-sensitive outlines rendered as SVG paths.
-- **Storage:** stroke data is serialized as JSON inside the node attributes, i.e. inside the normal note-content blob. This means encryption at rest (F2), vault hiding (F4), LAN sync (F5), backups, and note history all apply to ink **automatically, with zero extra work** — ink is just content.
-- Desktop/web: the same editor package renders ink read/write everywhere; on the PC the mouse can view, erase, or annotate.
-- Basic tools for v1: pen (2–3 widths/colors), eraser, undo. No shape recognition, layers, or lasso — this is a journal, not a whiteboard.
-- Eraser/editing granularity: per-stroke (hit-test against stroke outlines), which perfect-freehand's point model supports directly.
+Samsung's self-learning on-device conversion remains available for the moments text is wanted, and conversion is **fully off-switchable**:
+- The native ink canvas is not a text field, so Samsung's handwriting-to-text IME **never triggers on it** — ink mode is inherently conversion-free; no toggle needed. System-wide, Direct Writing is a Samsung setting (S Pen → "S Pen to text").
+- For deliberate text entry by pen: Samsung Direct Writing engages on text fields, including the WebView editor — but ProseMirror has documented Samsung-IME composition bugs (newlines, dropped characters). Plan: dogfood direct input first; if flaky, add the **native `EditText` capture overlay** (rock-solid handwriting target; recognized text inserted via the existing RN↔WebView bridge, `apps/mobile/app/screens/editor/tiptap/commands.ts`). Samsung's engine adapts to the user's writing on-device; building our own recognizer stays a non-goal.
+- **Later option — search inside ink:** ML Kit **Digital Ink Recognition** (verified current: on-device, offline after a ~20 MB per-language model download, 300+ languages, no personalization) can recognize our stored stroke data on demand — enabling background transcription of ink pages into hidden searchable text without ever converting the visible ink. Scoped as a post-v1 enhancement.
 
-**Known risk — WebView ink latency:** a WebView canvas adds some pen-to-ink latency versus native low-latency drawing surfaces. Mitigations, in order: pointer event coalescing + `desynchronized` canvas hint; if still unsatisfying on the Tab S9, fall back to a **native ink view** using Google's Jetpack [androidx.ink](https://developer.android.com/jetpack/androidx/releases/ink) low-latency Ink API (purpose-built for stylus apps, though still alpha as of mid-2026) writing the same stroke-JSON format into the node via the bridge. Same storage model either way.
-
-**Effort:** M–L (~2–3 weeks for the TipTap ink node incl. mobile toolbar; +1–2 weeks if the native low-latency fallback proves necessary).
-
-**Acceptance (F6 combined):** (a) with the overlay (Stage 2), a handwritten paragraph lands in the note as text, offline, with no dropped characters; (b) with conversion off, a freehand handwritten page is captured with pressure, stored only inside the encrypted content blob, appears on the other devices after LAN sync, and renders identically on desktop; (c) switching between convert mode and ink mode requires no more than one tap in the editor toolbar plus the documented one-time system toggle.
+**Acceptance (F6):** (a) ink surface uses front-buffered rendering + motion prediction with the JS thread out of the stroke path (verified by tracing); side-by-side with Samsung Notes on the Tab S9, latency is subjectively close and never rubber-bands; (b) a freehand page captures pressure/tilt, is stored only inside the encrypted content blob, appears on the other devices after LAN sync, and renders faithfully on desktop; (c) handwriting-to-text never triggers on the ink canvas; a handwritten paragraph via the text path lands as correct text, offline.
 
 ### F7 — Retained Notesnook Features (regression scope)
 
-Rich-text editor (TipTap: headings, lists, tasks, tables, code, math, images, audio, attachments), notebooks/tags/colors/favorites/pinned/archive, reminders (minus vault notes, F4), full-text search (FTS5), note version history, encrypted local backups (existing `database/backup.ts` full-backup path), import/export (Markdown/HTML/PDF where already supported), dark mode/themes (bundled only — themes marketplace is removed with the cloud strip).
+Rich-text editor retained but feature-frozen as the secondary/typed surface (TipTap: headings, lists, tasks, tables, code, math, images, audio, attachments), notebooks/tags/colors/favorites/pinned/archive, reminders (minus vault notes, F4), full-text search (FTS5), note version history, encrypted local backups (existing `database/backup.ts` full-backup path), import/export (Markdown/HTML/PDF where already supported), dark mode/themes (bundled only — themes marketplace is removed with the cloud strip).
 
 ## 6. Future Phase — Self-Hosted Server (VPS or Home Server)
 
@@ -199,14 +196,15 @@ When the user has a VPS (or wants a LAN hub as an additional always-on peer):
 |---|---|---|---|
 | **0. Build & baseline** | Both apps built from source and running (Electron on Windows; sideloaded APK), local-only by never logging in | Node 22.20.0, `npm run bootstrap`, Android Studio/JDK/Gradle toolchain; editor-mobile bundle build. Heaviest lift is the RN native-module build | 1–2 weeks |
 | **1. Cloud strip** | Verified zero-network app (F1) + packet-capture acceptance | F1.1–F1.9 | 1–2 weeks |
-| **2. Hidden vault + app-lock hardening** | F4 + F3 work item | ~8–9 files, ~110–140 LOC + Vault section UI | 1–2 weeks |
-| **3. LAN P2P sync** | F5 end-to-end across 3 devices | `SyncEndpoint` abstraction, discovery, TLS transport, per-peer cursors, QR pairing, triggers, firewall onboarding | 4–8 weeks (the big one) |
-| **4. S Pen** | F6a Stage 1 dogfood → Stage 2 overlay if needed; F6b ink block node (+ native low-latency fallback only if WebView latency disappoints) | native module + bridge; TipTap ink node + perfect-freehand | 3–5 weeks |
-| **5. VPS endpoint** | §6 Option B (or A) | when VPS exists | 1–2 weeks |
+| **2. Native ink editor (F6a)** | The pen-first writing surface: androidx.ink wrapped as a Fabric Native Component, portable stroke format, page UI, desktop replay renderer | Spike RN↔native-surface integration in week 1 (highest technical risk) | 4–6 weeks |
+| **3. Hidden vault + app-lock hardening** | F4 + F3 work item | ~8–9 files, ~110–140 LOC + Vault section UI | 1–2 weeks |
+| **4. LAN P2P sync** | F5 end-to-end across 3 devices | `SyncEndpoint` abstraction, discovery, TLS transport, per-peer cursors, QR pairing, triggers, firewall onboarding | 4–8 weeks (the big one) |
+| **5. Pen-to-text & ink search (F6b)** | `EditText` capture overlay if direct input proves flaky; optional ML Kit on-demand ink transcription for search | independent, can run in parallel with 4 | 1–2 weeks |
+| **6. VPS endpoint** | §6 Option B (or A) | when VPS exists | 1–2 weeks |
 
-*Own estimates for a solo developer working part-time with AI coding tools; Phase 3 carries the most uncertainty (Android background/network edge cases dominate).
+*Own estimates for a solo developer working part-time with AI coding tools; Phases 2 and 4 carry the most uncertainty (native-surface integration and Android background/network edge cases respectively).
 
-Ship order rationale: Phases 0–2 produce a fully usable single-device (or manually-backed-up) journal early; sync risk is isolated in Phase 3; S Pen is independent and can proceed in parallel with 3.
+Ship order rationale: the ink editor comes immediately after the cloud strip because it is the primary daily writing surface — Phases 0–2 already produce the thing the user actually journals on (single-device, manually backed up); the vault is small and lands before sync; sync risk is isolated in Phase 4; ink data is just a content blob, so nothing in Phase 2 blocks or reworks Phase 4.
 
 ## 8. Alternatives Considered (research-backed rejections)
 
@@ -224,8 +222,10 @@ Ship order rationale: Phases 0–2 produce a fully usable single-device (or manu
 | Risk | Sev. | Mitigation |
 |---|---|---|
 | Android background sync flakiness (Doze, FGS limits, NSD quirks) | **High** | `connectedDevice` FGS during sync windows only; foreground-initiated model; WorkManager wakes; Syncthing-folder Plan B kept warm |
-| S Pen direct input corrupts text in ProseMirror (documented bug class) | High | Two-stage plan; the `EditText` overlay is a known-good pattern, budgeted from the start |
-| WebView ink canvas latency feels worse than Samsung Notes | Med | perfect-freehand + desynchronized canvas first; native androidx.ink fallback (alpha, watch stability) writing the same stroke format; latency bar is "pleasant journaling", not art-app |
+| RN ↔ native ink surface integration (touch ownership vs RN gesture responder; SurfaceView-class layer compositing inside the RN view tree) | **High** | Use Ink's own `InProgressStrokesView` (inherits Google's correct layer handling) rather than a raw GLSurfaceView; `requestDisallowInterceptTouchEvent`; spike this in week 1 of Phase 2 before committing |
+| `androidx.ink` is young (first stable Dec 2025) — early third-party adopter | Med | Pin stable 1.0.x; the canonical stroke format is our own portable one, so a renderer swap can never lose data |
+| Perceived latency still noticeably behind Samsung Notes | Med | Front-buffer + motion prediction is the third-party ceiling (~10–25 ms est. vs Samsung's privileged ~2.8 ms); acceptance bar is "subjectively close side-by-side", set as explicit non-goal to match exactly |
+| S Pen direct-to-text corrupts text in ProseMirror (documented bug class) | Med (text path is secondary now) | `EditText` overlay is a known-good pattern, budgeted in Phase 5 |
 | Solo-maintained fork drifts from upstream (security fixes) | Med | Keep changes additive/behind seams (`SyncEndpoint`, vault predicate, host config); pin a fork point; cherry-pick upstream security fixes; crypto core is untouched |
 | Data loss from a sync bug (worst outcome for a journal) | Med | Merger is reused, not rewritten; conflicts flag rather than overwrite; automatic daily encrypted local backups with retention on every device before Phase 3 ships; restore drill in acceptance tests |
 | LWW clock skew merges the wrong direction | Low-Med | Existing 60 s threshold; pairing-time clock check; content conflicts are flagged, not silently merged |
@@ -238,9 +238,9 @@ Ship order rationale: Phases 0–2 produce a fully usable single-device (or manu
 2. Every persisted file is ciphertext (spot-check with `strings`); DB unopenable without key; app lock wraps the DB key.
 3. Vault locked → zero trace of secret notes anywhere in the UI or search; unlock → visible only in Vault section; relocks on restart/timeout.
 4. Phone-only + tablet-only edit while apart → both converge within seconds of joining the same Wi-Fi, PC off, zero taps; same-note concurrent edits produce a resolvable conflict, never silent loss.
-5. A handwritten S Pen paragraph becomes correct text in a note, fully offline; with conversion off, a freehand ink page is stored encrypted, syncs across devices, and renders on desktop.
+5. Ink writing on the Tab S9 runs front-buffered with motion prediction, the JS thread stays out of the stroke path, and side-by-side with Samsung Notes it feels subjectively close; freehand pages are stored only as encrypted blobs, sync across devices, and render faithfully on desktop. Optional handwriting-to-text still yields correct text, fully offline.
 6. Daily encrypted backup exists on each device and a restore drill succeeds.
 
 ---
 
-*Sources: code-level analysis of the Notesnook monorepo (file references inline); maintenance status of react-native-zeroconf, react-native-tcp-socket, bonjour-service, cr-sqlite, Yjs/y-webrtc, Automerge, Syncthing/Catfriend1 fork, iroh, p2panda verified against GitHub/npm on 2026-07-12; Android FGS limits from developer.android.com (Android 15 behavior changes / FGS timeout docs); S Pen/Direct Writing behavior from Android stylus-input docs, Chromium stylus_handwriting component, AndroidPolice coverage, and ProseMirror/Obsidian/CKEditor issue trackers; notesnook-sync-server self-hosting from its README, docker-compose, and issue #20; ink-mode libraries verified 2026-07-12: perfect-freehand (github.com/steveruizok/perfect-freehand, active, Feb 2026) and Jetpack androidx.ink (developer.android.com/jetpack/androidx/releases/ink, alpha). Effort estimates and the cr-sqlite-on-encrypted-DB risk call are own assessments.*
+*Sources: code-level analysis of the Notesnook monorepo (file references inline); maintenance status of react-native-zeroconf, react-native-tcp-socket, bonjour-service, cr-sqlite, Yjs/y-webrtc, Automerge, Syncthing/Catfriend1 fork, iroh, p2panda verified against GitHub/npm on 2026-07-12; Android FGS limits from developer.android.com (Android 15 behavior changes / FGS timeout docs); S Pen/Direct Writing behavior from Android stylus-input docs, Chromium stylus_handwriting component, AndroidPolice coverage, and ProseMirror/Obsidian/CKEditor issue trackers; notesnook-sync-server self-hosting from its README, docker-compose, and issue #20; pen stack verified 2026-07-12: androidx.ink 1.0.0 stable 2025-12-17 / 1.1.0-alpha04 (developer.android.com/jetpack/androidx/releases/ink), graphics-core 1.0.4 stable, input-motionprediction 1.0.0 stable, ML Kit Digital Ink Recognition (developers.google.com/ml-kit/vision/digital-ink-recognition, on-device/offline, no personalization), perfect-freehand (github.com/steveruizok/perfect-freehand, active Feb 2026), Samsung S Pen SDK status from developer.samsung.com (only the Remote SDK survives), front-buffered latency measurement from tbuckley.com/writing/stylus-latency (24 ms, Pixel 7 @ 60 Hz). Effort estimates, the ~10–25 ms latency projection, and the cr-sqlite-on-encrypted-DB risk call are own assessments.*
