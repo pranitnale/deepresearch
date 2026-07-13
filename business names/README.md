@@ -22,14 +22,16 @@ Research and naming work (2026-07-13) for a planned **Germany-based B2B parent c
 | `07-final-recommendations.md` | The shortlist, top recommendation, and next steps |
 | `08-new-candidates.md` | Wave 3 (2026-07-13, follow-up): 23 fresh uncrowded roots, collision + language + domain screens, updated ranking |
 | `09-tej-family.md` | Wave 3b: tej/tejas-based names on founder request — Sutejas & Tejawerk fully available, Tejora/Tejasva dropped |
+| `10-t-light-energy.md` | Wave 3c: T-starting light/energy names — Tapanwerk ("sun-works", zero letter-shift) & Tejomani ("jewel of light") fully available |
 
 ## Status / result
 
 - Wave 1–2 recommendation: **Urjawerk** (ūrjā "energy" + German *Werk*) — verification-clear, .com/.ai/.de all available (re-verified 2026-07-13).
 - **Wave 3 (founder wanted more-unique options)** added three more full-stack-available, collision-clear candidates: **Sumarga** ("the good path" — most sector-agnostic), **Mitrawerk** (ally + Werk), **Kiranwerk** (ray of light + Werk); details and ranking in 08.
 - **Wave 3b (founder asked for tej-based names):** **Sutejas** (real Sanskrit, "very radiant" — no collisions, .com/.ai/.de all free) and **Tejawerk** (radiance + Werk, all free); details in 09.
-- `.ai`-first alternatives: Medhira, Ritama, Suryana, Urjon, Ojasva (07); Sunaya, Sunetra, Tarini (08); Tejomaya (09).
-- Dropped: Krantix, Kiranix (05); Sumati, Agrima, Utsaha, Pramita, Sudaksha (08); Tejora, Tejasva, Tejwerk-vs-Teewerk caveat (09).
+- **Wave 3c (T-starting light/energy names):** **Tapanwerk** (tapana "the sun" + Werk — zero letter-shift between DE/EN, best pure phonetics of the project) and **Tejomani** (tejas + maṇi, "jewel of light") — both .com/.ai/.de free; details in 10.
+- `.ai`-first alternatives: Medhira, Ritama, Suryana, Urjon, Ojasva (07); Sunaya, Sunetra, Tarini (08); Tejomaya (09); Tapana, Taijasa (10).
+- Dropped: Krantix, Kiranix (05); Sumati, Agrima, Utsaha, Pramita, Sudaksha (08); Tejora, Tejasva, Tejwerk-vs-Teewerk caveat (09); Taraka (10).
 
 ## Open items for a fresh session
 
