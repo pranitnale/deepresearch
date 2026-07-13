@@ -24,6 +24,7 @@ Research and naming work (2026-07-13) for a planned **Germany-based B2B parent c
 | `09-tej-family.md` | Wave 3b: tej/tejas-based names on founder request — Sutejas & Tejawerk fully available, Tejora/Tejasva dropped |
 | `10-t-light-energy.md` | Wave 3c: T-starting light/energy names — Tapanwerk ("sun-works", zero letter-shift) & Tejomani ("jewel of light") fully available |
 | `11-tivra-coinages.md` | Wave 3d: coinages from tīvra ("intense, sharp") — Tivrium (clear, all domains free), Tivran, Tivrawerk; Tivron dropped |
+| `12-tiv-family.md` | Wave 3e: Tivran-shaped tiv- coinages — Tivrin (zero hits, all domains free) new top of family; Tivrex viable .ai-first |
 
 ## Status / result
 
@@ -32,6 +33,7 @@ Research and naming work (2026-07-13) for a planned **Germany-based B2B parent c
 - **Wave 3b (founder asked for tej-based names):** **Sutejas** (real Sanskrit, "very radiant" — no collisions, .com/.ai/.de all free) and **Tejawerk** (radiance + Werk, all free); details in 09.
 - **Wave 3c (T-starting light/energy names):** **Tapanwerk** (tapana "the sun" + Werk — zero letter-shift between DE/EN, best pure phonetics of the project) and **Tejomani** (tejas + maṇi, "jewel of light") — both .com/.ai/.de free; details in 10.
 - **Wave 3d (tivra coinages):** **Tivrium** (tīvra "intense" + -ium — collision-clear, .com/.ai/.de all free), Tivran and Tivrawerk also full-stack; details in 11.
+- **Wave 3e (tiv family, founder likes Tivran):** **Tivrin** (zero web hits, .com/.ai/.de all free) joins Tivran/Tivrium at the top; Tivrex clean but .com parked; Tivram/Tivos/Tivrana dropped; details in 12.
 - `.ai`-first alternatives: Medhira, Ritama, Suryana, Urjon, Ojasva (07); Sunaya, Sunetra, Tarini (08); Tejomaya (09); Tapana, Taijasa (10).
 - Dropped: Krantix, Kiranix (05); Sumati, Agrima, Utsaha, Pramita, Sudaksha (08); Tejora, Tejasva, Tejwerk-vs-Teewerk caveat (09); Taraka (10); Tivron, Tivrix, Tivrus, Tivrea (11).
 
