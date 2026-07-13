@@ -20,12 +20,14 @@ Research and naming work (2026-07-13) for a planned **Germany-based B2B parent c
 | `05-finalist-verification.md` | Collision + 7-language screen on the 9 coined finalists, with verdicts |
 | `06-domain-availability.md` | .com/.ai(/.de) status for all 46 checked domains, method notes, aftermarket options |
 | `07-final-recommendations.md` | The shortlist, top recommendation, and next steps |
+| `08-new-candidates.md` | Wave 3 (2026-07-13, follow-up): 23 fresh uncrowded roots, collision + language + domain screens, updated ranking |
 
 ## Status / result
 
-- **Top recommendation: Urjawerk** (ūrjā "energy" + German *Werk*) — verification-clear and the only candidate with **.com, .ai and .de all available** (as of 2026-07-13).
-- `.ai`-first alternatives: Medhira, Ritama, Suryana, Urjon, Ojasva (details in 07).
-- Dropped: Krantix, Kiranix (see 05).
+- Wave 1–2 recommendation: **Urjawerk** (ūrjā "energy" + German *Werk*) — verification-clear, .com/.ai/.de all available (re-verified 2026-07-13).
+- **Wave 3 (founder wanted more-unique options)** added three more full-stack-available, collision-clear candidates: **Sumarga** ("the good path" — most sector-agnostic), **Mitrawerk** (ally + Werk), **Kiranwerk** (ray of light + Werk); details and ranking in 08.
+- `.ai`-first alternatives: Medhira, Ritama, Suryana, Urjon, Ojasva (07); Sunaya, Sunetra, Tarini (08).
+- Dropped: Krantix, Kiranix (05); Sumati, Agrima, Utsaha, Pramita, Sudaksha (08).
 
 ## Open items for a fresh session
 
