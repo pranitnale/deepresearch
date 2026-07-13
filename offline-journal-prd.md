@@ -1,246 +1,276 @@
-# PRD — "Mindvault" (working title): A Fully Offline, Privacy-First Personal Journaling App
+# PRD v4 — "Mindvault" (working title): Pen-First, Fully Offline Personal Journal
+## Implementation-Grade Specification
 
-**Base:** Fork of [Notesnook](https://github.com/streetwriters/notesnook) (GPLv3)
-**Author:** Prepared from a code-level analysis of the Notesnook monorepo (web v3.4.3 / mobile v3.4.5 / core v8.1.3, cloned 2026-07-12) plus targeted research on LAN P2P sync, Samsung S Pen input, and the self-hostable Notesnook sync server.
-**Date:** 2026-07-12
-**Status:** Draft for review
+**Base:** Fork of [Notesnook](https://github.com/streetwriters/notesnook) (GPLv3) — monorepo at web v3.4.3 / mobile v3.4.5 / core v8.1.3.
+**Date:** 2026-07-13 · **Status:** v4 — pressure-tested (adversarial code-level review) + all product decisions locked by the owner.
+**Audience:** an implementing AI agent (Opus 4.8). **This document is the contract: implement exactly what is written. Where behavior is not specified, follow the Decision Protocol in §0. Do not invent product behavior.**
 
 ---
 
-## 1. Vision
+## 0. Implementation Ground Rules (read first)
 
-A **pen-first** journaling app for exactly one person and three devices — a Windows PC, a Samsung Galaxy S23 Ultra, and a Galaxy Tab S9 — that **never connects to the internet**. Most entries are handwritten with the S Pen and kept as ink, so the writing surface must deliver near-native pen latency and ink quality. All data lives encrypted on the user's own devices, syncs automatically and quickly whenever two devices share the same Wi-Fi network (no hub, no cloud, no interaction), and hides a "secret" tier of notes behind a vault that is invisible in normal use. When the user later runs their own VPS, the same data layer must be able to sync through it by changing configuration — not architecture.
+1. **No product decisions.** Every deliberate choice is recorded here. If you hit a genuinely unspecified behavior, STOP and ask the owner; do not pick silently.
+2. **Deterministic fallbacks.** A few items are marked `[GATE]` with an if/then rule — verify the stated condition at implementation time and follow the stated branch. That is not a decision; it is a conditional instruction.
+3. **Priorities when constraints collide:** Privacy > Correctness (never lose an entry) > Pen experience > Convenience > Other features. Rich text is sacrificable; the three invariants (I1–I3, §2) are never sacrificable.
+4. **File references** are to the Notesnook monorepo at the versions above and were verified against source on 2026-07-12.
+5. Work in phases (§9); each phase has acceptance tests that must pass before the next starts.
 
-**Design principle, in priority order:** Privacy > Correctness (never lose a journal entry) > Pen experience (latency & ink quality) > Convenience > Other features (rich text is explicitly sacrificable).
+## 1. Product Summary
 
-## 2. Goals and Non-Goals
+A journaling app for exactly one person and three devices — Windows 11 PC (Electron), Samsung Galaxy S23 Ultra, Galaxy Tab S9 (both Android, sideloaded) — that **never connects to the internet**. Most content is handwritten with the S Pen and kept as ink on a native low-latency canvas. Devices sync automatically over local Wi-Fi with no hub, no cloud, and no interaction. A hidden vault conceals secret entries. A future self-hosted server is a configuration change, not an architecture change.
 
-### Goals
-- **G1 — Zero internet.** The app makes no network connection except to explicitly paired personal devices on the local network (and, in a later phase, to a user-configured self-hosted endpoint).
-- **G2 — Everything encrypted at rest.** Databases, note content, attachments, sync queues/cursors, and any exported change files are never written to disk in plaintext, on any platform.
-- **G3 — App lock.** The whole app is locked behind a password/PIN + biometrics; the lock is cryptographic (wraps the database key), not cosmetic.
-- **G4 — Hidden vault.** Vault notes are invisible in every normal view, search, and count until the vault is unlocked; a visible "Vault" section exists but reveals nothing while locked.
-- **G5 — Serverless LAN sync.** Any two of the three devices sync automatically when on the same Wi-Fi, with no user interaction, no always-on hub (phone↔tablet must sync with the PC off), and near-real-time latency when both apps are open.
-- **G6 — Best-in-class pen writing (a MUST, ranked with G1/G5).** The primary editing surface on Android is a native low-latency ink canvas — handwriting is kept as ink by default, with the lowest latency and best ink quality achievable by a third-party app. On-device Samsung handwriting-to-text remains available per entry, and fully off-switchable.
-- **G7 — Future VPS path.** The sync layer is a pluggable endpoint; pointing it at a self-hosted server later is a configuration change.
-- **G8 — Keep what Notesnook already does well, where it's free:** notebooks/tags/colors, reminders, attachments, full-text search, note history, backups; the rich-text editor is retained as a secondary, feature-frozen surface (see F6).
+### Locked product decisions (owner, 2026-07-12/13)
+| # | Decision |
+|---|---|
+| D1 | **Journal-first app model**: launches into a "Today" view; date-based navigation; secondary free-form Notes area retained (notebooks/tags survive there) |
+| D2 | **Ink canvas = endless vertical page**, fixed logical width, with optional horizontal ruled guide lines like a paper notebook |
+| D3 | **An entry is either ink or typed, never mixed.** A day can contain multiple entries of both kinds |
+| D4 | **Ink conflicts resolve automatically by writing time**: earlier-written content sits higher on the page; later writing flows in below where the earlier writing ends; second-level precision; no conflict dialog for ink |
+| D5 | **Vault: separate password, no biometrics.** App lock keeps PIN/password + fingerprint as today |
+| D6 | **Backups: daily encrypted local backup on every device; weekly automatic copy to an owner-chosen folder on the PC** |
+| D7 | **English only** for handwriting recognition (Samsung pack now; ML Kit ink search later) |
+| D8 | **S23 Ultra runs the identical full app** (same editor, navigation, vault) |
 
-### Non-Goals (explicit)
-- **Multi-user, sharing, collaboration, publishing.** Monographs (public publishing) are removed.
-- **Real-time concurrent editing** of the same note on two devices (CRDT). Conflicts are rare for one person; the existing conflict-flag + manual resolution is sufficient.
-- **Custom handwriting-recognition model / "self-learning" ink engine.** Research confirmed no off-the-shelf, offline, personalizable recognizer exists beyond what Samsung ships on-device. We ride Samsung's engine (which does adapt to the user's writing over time) rather than building one. Revisit only if Samsung's engine proves inadequate.
-- **Matching Samsung Notes' ~2.8 ms pen latency.** That figure runs on a privileged Samsung hardware pipeline closed to third parties (their ink SDK is discontinued). Target: the best a third-party app can do (~10–25 ms perceived, own estimate) — visibly close, not identical.
-- **Further rich-text investment.** The TipTap editor is kept as-is for typed notes and viewing but feature-frozen; pen experience wins every trade-off against it.
-- **iOS support.** Devices are Windows + two Samsung Androids.
-- **App-store distribution.** Personal sideloaded APK + local desktop build.
+## 2. Invariants (apply to every feature, every phase)
 
-## 3. Why Fork Notesnook (Decision Record)
+- **I1 — Zero internet.** No network traffic except mDNS discovery and TLS connections to explicitly paired personal devices (later: to one owner-configured self-hosted endpoint). Verified by packet capture (§9 acceptance).
+- **I2 — Everything encrypted at rest.** SQLite databases (SQLCipher-family, already true on all platforms — `apps/desktop/src/api/sqlite-kysely.ts`, `apps/web/src/common/db.ts:74`, `apps/mobile/app/common/database/index.ts`), note content (XChaCha20-Poly1305, `packages/crypto/src/encryption.ts`), attachments (chunked encrypted, `packages/core/src/database/fs.ts`), **and every new artifact this PRD adds**: ink blobs, sync cursors, pairing keys, backups, logs. No journal plaintext in any persisted file.
+- **I3 — Never lose writing.** Sync never silently discards strokes or text. All merge rules below are additive; destructive operations (delete, trash purge) happen only via explicit user action.
 
-Code-level analysis found Notesnook unusually well-suited as the base — the alternative ("borrow parts, build fresh") is strictly more work for less reliability:
+### Non-goals (explicit, final)
+- Multi-user, sharing, collaboration, publishing (monographs removed). Real-time co-editing/CRDT for typed text.
+- Custom/self-learning handwriting recognition (Samsung's on-device adaptation is the ceiling).
+- Matching Samsung Notes' ~2.8 ms privileged pen latency (third-party ceiling ≈ 10–25 ms perceived; own estimate).
+- Mixed ink+text entries (D3). Further rich-text investment (TipTap editor is retained but feature-frozen).
+- iOS; app-store distribution.
+- **v1 regression, accepted:** ink entries are **not content-searchable** (titles/dates only) until the post-v1 ink-transcription feature (§6.5) ships.
 
-1. **Local-only operation is already a supported mode.** `database.setup()` runs with no account; `Sync.start()` returns immediately if no user is logged in (`packages/core/src/api/sync/index.ts:183`). Never logging in already yields a fully functional offline app.
-2. **Encryption at rest already exists on every platform.** The entire SQLite database is encrypted: `better-sqlite3-multiple-ciphers` on desktop (`apps/desktop/src/api/sqlite-kysely.ts`), encrypted `wa-sqlite` on web (`apps/web/src/common/db.ts:74`), SQLCipher-keyed `react-native-quick-sqlite` on Android (`apps/mobile/app/common/database/index.ts`). Note content and attachments are additionally encrypted with XChaCha20-Poly1305 (libsodium), keys derived with Argon2 (`packages/crypto/src/encryption.ts`). Attachments are chunked encrypted files, never plaintext on disk.
-3. **Cloud coupling is loose and centralized.** All server URLs flow through one constants object (`packages/core/src/utils/constants.ts`) overridable at runtime via `db.host()`; both apps already ship a self-hosted-server settings screen. No telemetry or analytics SDK exists anywhere in the codebase. The only hardcoded phone-home outside this layer is the desktop auto-updater (`apps/desktop/src/utils/autoupdater.ts:26`).
-4. **App lock already exists** on all platforms, and on Android it re-encrypts the database key with an Argon2-derived key from the lock password (`apps/mobile/app/common/database/encryption.ts`) — cryptographically real.
-5. **Vault (per-note encryption) already exists** (`packages/core/src/api/vault.ts`); we only need to add the "hidden" behavior.
-6. **The sync engine's design is P2P-friendly.** Sync items are opaque per-record encrypted blobs merged by last-write-wins timestamps (`packages/core/src/api/sync/merger.ts`) — the merge logic works peer-to-peer unchanged; only the transport (SignalR client→server) must be replaced.
-7. **License:** GPLv3. A personal fork is unproblematic; if ever distributed, source must be published.
+## 3. Why Fork Notesnook — and Two Corrections from the Adversarial Review
 
-**Main gaps to build:** (a) LAN P2P transport, (b) hidden vault, (c) S Pen input path, (d) cloud-strip hardening. Codebase is ~225k lines TS/TSX but well-modularized; the touched surface is small.
+Notesnook remains the right base: encrypted SQLite + content crypto on all platforms, cleanly separated local persistence, app lock and vault exist, all cloud endpoints behind one config layer, no telemetry, GPLv3. **But two v1–v3 claims were falsified against the code and are corrected throughout this spec:**
 
-## 4. Users and Devices
+1. **CORRECTION — keys require an account in stock Notesnook.** The data-encryption key (DEK) is derived from login credentials: `collector.collect()` → `db.user.getDataEncryptionKeys()` → `getMasterKey()` returns `undefined` without a user and the collector **throws** (`packages/core/src/api/sync/collector.ts:49-52`, `user-manager.ts:442-446`). "Never log in" gives a working local editor but **no sync and no DEK**. Therefore this fork builds a **LocalKeyring** (§5.1) that provisions all keys without any account. This is core work, not UI stripping.
+2. **CORRECTION — the sync collector cannot serve multiple peers unchanged.** Items carry a single boolean `synced` flag set after one successful push (`sql-collection.ts:288,314`); with 3 peers, an item pushed to one peer would never be collected for the others. The **merger** is reused as-is (timestamp LWW, `merger.ts`); the **collector is replaced** for P2P by cursor-based collection (§5.4). The `synced` flag is left in place, untouched, for the future stock-server path only.
 
-| Device | OS | Role |
-|---|---|---|
-| PC | Windows 11, Electron desktop build | Long-form writing, archive, backup origin |
-| Galaxy S23 Ultra | Android (One UI 5.1+), sideloaded APK | Capture on the go, S Pen quick notes |
-| Galaxy Tab S9 | Android (One UI 5.1+), sideloaded APK | Primary handwriting/journaling surface |
+Minor correction: the vault key already syncs as a normal encrypted item in the `vaults` collection (`SYNC_COLLECTIONS_MAP`, `packages/core/src/api/sync/types.ts`); the `SendVaultKey` SignalR handler is a legacy migration path. No special vault-key transport is needed for P2P — the vaults collection syncs like any other (§5.4.6).
 
-Single user. All devices trusted after one-time pairing. Threat model: (1) data must never leave the devices or the paired LAN links; (2) a person with casual access to an unlocked device must not see that secret notes exist; (3) a person with the device but not the app-lock secret must not read anything (encrypted at rest).
+## 4. Product Specification
 
-## 5. Functional Requirements
+### 4.1 App model & navigation (D1)
+- **Home = "Today" screen** on all three platforms: date header, vertically stacked previews of today's entries (newest last), two creation buttons: **New ink entry** (primary, default) and **New typed entry**.
+- **Navigation:** swipe left/right (or ◀▶ buttons on desktop) = previous/next day. Calendar icon → month grid; days with entries show a dot; tap → that day's view. A "Journal" / "Notes" / "Vault" three-item primary navigation replaces Notesnook's sidebar root. "Notes" contains the retained free-form Notesnook experience (notes list, notebooks, tags, colors, favorites, archive, trash, reminders). "Vault" is the dedicated section per F-VAULT (§6.3).
+- **Journal entry metadata:** new nullable column `journalDate` (TEXT, `YYYY-MM-DD`) on the `notes` table (§5.7 migration). Journal entries have it set (creation date by default; editable via an entry menu "Move to date…"); free-form notes have `NULL`. Journal views query by `journalDate`; the Notes area filters `journalDate IS NULL`. Entry default title: `HH:mm` creation time (user-editable).
+- Deleting an entry uses the normal trash (retention: Notesnook default 7 days — keep the existing `trashCleanupInterval` default and settings UI).
 
-### F1 — Offline-Only Operation (Cloud Strip)
+### 4.2 Ink entry surface (D2, D3)
+- One ink entry = one **endless vertical canvas**: fixed logical width **1000 units**, height grows with content (§5.2 coordinate spec). Rendered scaled-to-width on every screen (Tab S9, S23 Ultra, desktop window) — no reflow, no repagination; the phone simply shows the same page narrower (D8: identical app).
+- **Paper style per entry** (persisted in the ink blob header, §5.2): `blank` (default) or `ruled`. Ruled = horizontal guide lines every **56 units**, rendered light gray (`#00000022` light theme / `#FFFFFF22` dark), non-exporting by default (export flag in §6.6). A toolbar toggle switches style at any time (affects rendering only, never stroke data).
+- **Dark theme:** the canvas background follows the app theme. Strokes whose color is the default black `#FF262626` render as `#FFE8E8E8` in dark theme (display-time mapping only; stored color unchanged). Non-default colors render as stored. This mapping table lives in one shared constant used by both renderers.
+- **Tools (v1, complete list):** pen (3 sizes: 3/5/8 units; 6 colors: black default, blue `#2E5AAC`, red `#B3261E`, green `#2E7D32`, amber `#B26A00`, purple `#6750A4`), highlighter (1 size: 24 units; same 6 colors at 40% alpha), stroke eraser (removes whole strokes on hit), undo/redo (session-local, unlimited within an open editing session), scroll mode toggle (finger always scrolls; pen writes — pen never scrolls). Nothing else: no lasso, no shapes, no layers, no zoom in v1.
+- Stylus-only inking (`pointerType`/tool-type pen); finger touches scroll. Automatic palm rejection follows from pen-only input.
+- Typed entries use the existing TipTap editor unchanged (feature-frozen).
 
-**Requirement:** The app must make zero network calls to non-paired hosts, verifiable by running it behind a packet capture.
+### 4.3 First-run / onboarding flow (exact order)
+**Device #1 (any device):**
+1. Welcome → set **app-lock password** (mandatory) + offer fingerprint enrollment (Android) / WebAuthn key (desktop) — reuses existing app-lock implementation (`apps/mobile/app/components/app-lock/`, `apps/web/src/views/app-lock.tsx`).
+2. LocalKeyring generates all keys (§5.1) — silent, no UI beyond a progress spinner.
+3. (PC only) Windows Firewall step: register inbound allow rule for TCP port 53222 and UDP 5353, private networks profile, with a shown-and-confirmed dialog.
+4. (PC only) Choose the **weekly backup folder** (D6) via directory picker; skippable, re-promptable from Settings with a persistent badge until set.
+5. Land on Today.
 
-Work items (all locations code-verified):
+**Devices #2, #3:** Welcome → set app-lock password → **"Pair with existing device"**: scan QR shown on any already-set-up device (§5.5). Pairing transfers the DEK; first sync then populates the journal. A "start fresh instead" path exists but requires typing CONFIRM (it forks the data set permanently — two independent DEKs can never merge).
 
-| # | Item | Where | Effort |
+**Vault creation** is not part of onboarding: first use of "Vault" in navigation prompts creation with its own password (D5).
+
+### 4.4 Conflict handling (D4)
+- **Ink entries: no conflicts, ever — by construction.** The ink data model is a grow-only set of *writing sessions* merged deterministically by time (§5.3). Concurrent edits on two devices produce a page where earlier-written content appears higher and later writing flows below it, to the second. No dialog, no conflicted copies.
+- **Typed entries:** keep Notesnook's existing behavior verbatim — timestamp merge within a 60 s threshold, otherwise flag `conflicted` and resolve in the existing diff viewer (`packages/core/src/api/sync/merger.ts`, `apps/web/src/components/diff-viewer`).
+- **Vault-locked ink entries** (content ciphered with the vault key, sessions unreadable at merge time): if both sides changed, store the remote version alongside local using the existing `conflicted` mechanism; on the next vault **unlock**, run the ink session-merge automatically and clear the flag. No user interaction.
+
+### 4.5 Backups (D6)
+- **Daily** (every device): on first app-foreground of a calendar day, write a full encrypted backup via the existing backup path (`packages/core/src/database/backup.ts`, encrypted mode) to app-private storage. Retention: keep newest **7 daily + 4 weekly** (weekly = the newest backup of each ISO week); delete older automatically.
+- **Weekly (PC only):** after the daily backup on the first foreground of each ISO week, additionally copy that backup file into the owner-chosen folder (§4.3 step 4). Retention in that folder: keep newest **12**; delete older copies **that match this app's backup filename pattern only** (`mindvault-backup-YYYYMMDD-HHmmss.nnbackup`); never touch other files.
+- Manual "Export encrypted backup now" button in Settings on all platforms (file-save dialog / SAF picker).
+- Restore: existing Notesnook restore flow, gated behind app-lock authentication.
+
+## 5. Technical Specifications (normative)
+
+### 5.1 LocalKeyring — key hierarchy without accounts (replaces account-derived crypto; resolves Correction 1)
+
+New module `packages/core/src/localkeyring.ts` + per-platform storage. **All keys are generated locally with libsodium CSPRNG on device #1 and never derived from any account.**
+
+| Key | Size | Purpose | Storage |
 |---|---|---|---|
-| F1.1 | Remove/neutralize account & login UI; app boots straight into local-only mode | `apps/web/src/dialogs/`, `apps/mobile/app/components/auth/` | S |
-| F1.2 | Point all 7 hosts (`API_HOST`, `AUTH_HOST`, `SSE_HOST`, `SUBSCRIPTIONS_HOST`, `ISSUES_HOST`, `MONOGRAPH_HOST`, `NOTESNOOK_HOST`) at empty/invalid values by default | `packages/core/src/utils/constants.ts` | XS |
-| F1.3 | Stub desktop auto-updater (the one hardcoded URL outside the hosts layer) | `apps/desktop/src/utils/autoupdater.ts:26-28` | XS |
-| F1.4 | Remove mobile update check (`react-native-check-version`) | `apps/mobile` deps | XS |
-| F1.5 | Remove subscriptions/IAP/pricing (Paddle, `react-native-iap`, `subscriptions.ts`, `pricing.ts`, `offers.ts`, `circle.ts`) — most tangled strip, but gated and non-blocking | `packages/core/src/api/`, both app UIs | M |
-| F1.6 | Remove monograph publishing (`packages/core/src/api/monographs.ts`, publish UI in both apps) | see left | S |
-| F1.7 | Remove bug-report uploader (`packages/core/src/api/debug.ts`) and announcements/version fetch (`packages/core/src/api/index.ts:483-487`) | see left | XS |
-| F1.8 | Android manifest: keep `INTERNET` permission (needed for LAN sockets) but add a debug-build network-security config restricting cleartext to RFC1918 ranges; verify with mitmproxy that no other traffic exists | `apps/mobile/native/android/` | S |
-| F1.9 | Acceptance test: 24h run on all 3 platforms behind packet capture → only mDNS + paired-peer traffic observed | — | S |
+| `dbKey` | 32 B random | SQLCipher database key | exactly as today: Android Keychain/MMKV path (`apps/mobile/app/common/database/encryption.ts`), web/desktop WebCrypto keystore (`apps/web/src/interfaces/key-store.ts`) — including the existing app-lock wrapping (password re-encrypts `dbKey`; unchanged) |
+| `dek` | 32 B random | data encryption key for sync-item and attachment crypto — plays the role of stock Notesnook's account key | stored **inside the encrypted DB** `kv` table, additionally wrapped by `dbKey`-derived key (HKDF-SHA256, info=`"mv:dek:v1"`); synced only via pairing (§5.5), never via item sync |
+| `deviceKeyPair` | Ed25519 + P-256 TLS cert | peer identity + TLS | private halves in platform keystore; public halves in `sync_peers` rows of paired devices |
+| vault key | existing | per-vault, wrapped by vault password | unchanged (`packages/core/src/api/vault.ts`); rides normal item sync in the `vaults` collection |
 
-Note: telemetry removal is **not** a work item — the codebase ships no analytics SDK (verified by dependency and source grep).
+**Integration:** implement `LocalKeyring.getDataEncryptionKeys()` with the same return shape as `db.user.getDataEncryptionKeys()` and route the collector, attachment fs (`getAttachmentsKey`), and content crypto through it. The `db.user` object remains present but permanently logged-out; every call-site that throws on missing user for crypto purposes is redirected to LocalKeyring (grep anchor: `getDataEncryptionKeys`, `getMasterKey`, `userEncryptionKey`). The `EVENTS.userSessionExpired` path must become unreachable.
+**Key rotation is out of scope for v1.** Losing all three devices + all backups = data unrecoverable; the onboarding shows this in one sentence at DEK creation.
 
-### F2 — Encryption at Rest (Invariant)
+### 5.2 Portable ink format `mvink` v1 (canonical; both renderers build against THIS)
 
-**Requirement:** every byte the app persists is encrypted.
+One ink entry's content blob = UTF-8 JSON (encrypted at rest like all content):
 
-- **Already true (keep + verify in CI/tests):** SQLite DB encrypted on all platforms; note content XChaCha20-Poly1305; attachments chunked-encrypted (`packages/core/src/database/fs.ts`, `@notesnook/streamable-fs`, `react-native-blob-util` cache of encrypted chunks); FTS index lives inside the encrypted DB.
-- **New surfaces this PRD adds — must inherit the invariant:**
-  - P2P sync payloads: already ciphertext (sync items are `Cipher` blobs encrypted with the data key before leaving the collector — `packages/core/src/api/sync/collector.ts`); transport adds TLS on top.
-  - Per-peer sync cursors/pairing keys: store in the encrypted SQLite `kv`/`config` tables, or Android Keystore / Windows DPAPI via the existing key-store abstractions — never plaintext files.
-  - Any debug logs must not contain note plaintext (audit `packages/logger` usage in new code).
-- **Acceptance:** open every file the app writes with a hex viewer / `strings` — no journal plaintext anywhere; DB fails to open without key.
+```jsonc
+{
+  "fmt": "mvink", "v": 1,
+  "paper": { "style": "blank" | "ruled" },        // ruled line spacing is fixed: 56 u
+  "sessions": [ /* ordered by (start, deviceId) ascending — ALWAYS stored sorted */
+    {
+      "id": "<uuidv4>",
+      "deviceId": "<uuidv4 of authoring device>",
+      "start": 1767312000000,                      // epoch ms UTC of first stroke's first point
+      "end": 1767312245000,                        // epoch ms UTC of last stroke's last point
+      "yShift": 0,                                 // merge-applied vertical offset in units (§5.3); render y = stored y + yShift
+      "strokes": [
+        {
+          "id": "<uuidv4>",
+          "t0": 1767312001234,                     // epoch ms of first point
+          "brush": { "kind": "pen" | "highlighter", "size": 5, "color": "#FF262626" }, // size in units; color #AARRGGBB
+          "pts": [ [x, y, p, tx, ty, dt], ... ]    // see units below
+        }
+      ]
+    }
+  ]
+}
+```
 
-### F3 — App Lock
+- **Units & coordinates:** logical canvas units; canvas width is exactly **1000 u**; origin top-left; +y downward; y unbounded ≥ 0. Device mapping: `1 u = deviceCanvasWidthPx / 1000` — resolution-independent by construction. `x,y` are floats, 2-decimal max precision.
+- **Point fields:** `p` pressure normalized 0.0–1.0 (unavailable → 0.5); `tx, ty` tilt in degrees −90…90, integers (unavailable → 0); `dt` = ms since the stroke's `t0`, uint (monotone non-decreasing). Timestamps come from the device wall clock; §5.4.7 covers skew.
+- **Erasing a stroke removes it from `strokes` and appends its id to a session-level `"deleted": ["<strokeId>", ...]` array** (tombstones — required so a deletion survives merge with a peer that still has the stroke). Undo of an erase removes the tombstone and restores the stroke.
+- Writers MUST reject/ignore unknown `fmt`/`v` (render placeholder "newer format — update this device"); minor additive fields are allowed only with a `v` bump.
+- Android MAY cache androidx.ink `ink-storage` binaries for fast rehydration, keyed by content hash, in app-private storage; the cache is disposable and never synced. The JSON above is the sole source of truth.
 
-**Requirement:** PIN/password + biometric lock on app open and on resume after timeout.
+### 5.3 Ink merge algorithm (implements D4; runs inside the merger for content rows whose note content type is `ink`)
 
-**Status: already implemented — adopt, don't build.**
-- Android: `apps/mobile/app/components/app-lock/index.tsx` + `apps/mobile/app/services/biometrics.ts` (fingerprint) + `applock-password` dialog; the lock password re-encrypts the DB key (Argon2, `NOTESNOOK_APPLOCK_KEY_SALT`) and removes the plaintext key from Keychain.
-- Desktop: `apps/web/src/views/app-lock.tsx` + `apps/web/src/interfaces/key-store.ts` (password or WebAuthn security key wrapping the WebCrypto-held DB key).
-- **Work item:** make app lock mandatory in onboarding (currently optional), default lock-on-background timeout ≤ 1 min on mobile. Effort: XS.
+Input: `local`, `remote` mvink documents for the same entry. Output: merged document. Deterministic, commutative, associative:
 
-### F4 — Hidden Vault (Secret Notes)
+1. **Union sessions by `id`.** For a session id present in both, union `strokes` by stroke `id`, union `deleted` arrays, then drop strokes whose id ∈ `deleted`. (`end` = max of both.)
+2. **Sort sessions** by `(start, deviceId)` ascending.
+3. **Recompute `yShift` for every session, in sorted order:**
+   - Maintain `floor = 0` (the bottom of all earlier-session content) and `lastDevice = null`.
+   - For each session S: let `top(S)`, `bottom(S)` = min/max stored stroke y (ignoring yShift).
+     - If S was written **on the same device and same canvas lineage as the previous session** (i.e., `S.deviceId == lastDevice`), the author placed it deliberately (possibly annotating above): `S.yShift = prevShiftOfThatDevice` (sessions from one device keep their relative positions — track one running shift per deviceId).
+     - Else (device change in the timeline): `S.yShift = max(perDeviceShift[S.deviceId] ?? 0, floor + GAP − top(S))` and record it as that device's running shift. `GAP = 24 u`.
+   - After placing S: `floor = max(floor, bottom(S) + S.yShift)`.
+4. Result is stored sorted with computed `yShift`s. Re-merging the same inputs yields byte-identical output (canonical JSON: sorted keys, fixed float formatting).
 
-**Requirement (user's chosen semantics):** vault notes are excluded from every normal view, search, and count. A visible "Vault" section exists in the UI, but shows nothing (and leaks no counts) until unlocked with the vault password. After unlock, vault notes appear in the Vault section (and remain excluded from normal lists). Auto-relock on timeout (existing `getVaultLockAfter`) and on app restart (vault password is memory-only — already true).
+Effect: writing that happened first (by wall clock, to the second — D4) appears higher; a device's own writing never rearranges under it; two devices' concurrent writing stacks in time order instead of overlapping. A **session boundary** is created when: entry opened, or ≥ 5 min idle (no strokes), or entry closed/backgrounded.
 
-**Implementation (code-verified plan; ~110–140 LOC across 8–9 files):**
+### 5.4 P2P sync protocol `mvsync` v1 (replaces the SignalR transport; resolves Correction 2)
 
-All note-list reads funnel through two core query builders — inject one "not in vault unless unlocked" SQL predicate at each:
-1. Collection getters in `packages/core/src/collections/notes.ts` (`all`, `favorites`, `pinned`, `archived`, `conflicted`) — wrap their `createFilter` callbacks.
-2. `RelationsArray.selector` in `packages/core/src/collections/relations.ts:275` (notebook/tag/color context lists) — inject **only** when the target is notes and the querying reference is *not* the vault itself (that carve-out is what makes the Vault section work).
-3. Search: add vault-note IDs to the existing `excludedIds` mechanism in `packages/core/src/api/lookup.ts` (4 functions) — the same pattern already used to exclude trashed notes. FTS already indexes locked content as an empty string; this additionally hides titles.
-4. Counts: `packages/core/src/collections/notebooks.ts` `totalNotes()`/`notes()`.
+**Model: pull-only gossip.** Devices never push. When two paired peers meet, each pulls the other's changes since its per-peer cursor and merges locally with the existing merger (`mergeItem` LWW semantics preserved: remote wins only if `dateModified` strictly greater — this also makes echo pulls no-ops). Transitive propagation (phone→tablet→PC) follows automatically because merged items keep their original `dateModified` and ids.
 
-The predicate reuses the correlated relations subquery already built for the `locked:` search filter (`lookup.ts:190-193`) — it uses the relations index and avoids the 200-parameter SQL limit that an ID-list approach would hit. Gate on `db.vault.unlocked` (existing in-memory state, `packages/core/src/api/vault.ts`) plus a new cached `defaultVaultId` in `collections/vaults.ts`. Wire list refreshes to the existing `EVENTS.vaultLocked/vaultUnlocked/vaultAutoLocked` events (web `stores/note-store.ts` + `app-store.ts`; mobile `hooks/use-app-events.tsx` + `stores/use-notes-store.ts`).
+1. **Discovery:** DNS-SD `_mvsync._tcp.local.`, TXT record `{"d":"<deviceId>","pv":1}`. Android: `react-native-zeroconf`; Electron: `bonjour-service`. Fixed TCP port **53222** (fallback: next free port up to 53232, advertised in the SRV record).
+2. **Transport:** TLS 1.3, each device's self-signed P-256 cert (10-year validity, CN = deviceId). Trust = exact certificate-fingerprint pinning against the `sync_peers` table; anything else is rejected before HTTP. Every request additionally carries `Authorization: Bearer <pairToken>` (§5.5).
+3. **Endpoints** (JSON bodies; all under `/v1`):
+   - `GET /v1/manifest` → `{ deviceId, name, pv: 1, schema: <CURRENT_DATABASE_VERSION>, now: <epoch_ms> }`. If the caller's `pv` or `schema` differs → respond normally, but the **caller** must refuse to sync and surface "update your apps" (skew rule: sync only between identical `pv` AND identical `schema`).
+   - `GET /v1/items?since=<cursor>&limit=500` → `{ items: [{ collection, id, v, dateModified, cipher }...], next: <cursor>, done: bool }`. Ordered by `(dateModified, id)` ascending; `cursor` is the opaque string `"<dateModified>:<id>"` of the last row returned; `since=0` = from the beginning. Items are the existing per-record encrypted `SyncItem` cipher envelopes (encrypted with the DEK exactly as the stock collector does), across all of `SYNC_COLLECTIONS_MAP`'s collections **including `vaults` and `attachments` metadata**. Server-side implementation: new `collectSince(cursor, limit)` in `packages/core` — `WHERE (dateModified, id) > cursor ORDER BY dateModified, id` per collection, interleaved by dateModified; it does **not** read or write the legacy `synced` flag.
+   - `GET /v1/attachments/<hash>` → the encrypted chunk stream for that content-addressed attachment (existing encrypted chunk files served verbatim). Supports `Range`; puller resumes on disconnect. Pulled lazily: after item sync, fetch hashes referenced by attachment metadata rows that are missing locally.
+   - `GET /v1/keys` → only valid during pairing (§5.5), else 403.
+4. **Sync rounds:** triggered on app-foreground, on Wi-Fi-connect event, on local-DB-change (debounced 5 s, mirroring `auto-sync.ts`), and on mDNS peer-appearance; plus Android WorkManager periodic (15 min, network-required) best-effort rounds. During an active round Android holds a `connectedDevice` foreground service (exempt from the 6 h dataSync cap); the service stops when the round ends. No 24/7 listener promise: the HTTP server runs while the app process lives; a backgrounded/killed app simply syncs on next trigger.
+5. **Cursors:** new table `sync_peers(peerId TEXT PK, name TEXT, certFp TEXT, pubKey TEXT, pairToken TEXT, pullCursor TEXT, lastSeen INTEGER, addedAt INTEGER)` inside the encrypted DB. `pullCursor` advances only after each page's items are fully merged and committed (crash-safe: re-pulling a page is idempotent by LWW).
+6. **Vault items** sync as ordinary ciphered rows (vault key rides the `vaults` collection; note §4.4 for locked-ink conflict handling).
+7. **Clock sanity:** each `manifest` exchange compares `now` values; if |Δ| > 120 s, sync proceeds but both devices show a persistent warning banner ("clock skew — fix device clocks"), because LWW and D4 ordering depend on wall clocks.
+8. **Errors/retry:** network failures retry with exponential backoff 1 s → 60 s within a round, max 5 attempts, then the round ends silently (next trigger retries). Malformed responses abort the round and log (I2-compliant logging, §5.8).
+9. **Legacy path:** SignalR sync client, `synced` flags, and `db.user` gating remain in the codebase untouched but permanently dormant behind the absent account; the future self-hosted phase (§8) re-uses `collectSince` with a `RemoteServerEndpoint`.
 
-**Side channels (checklist from code audit):**
-- Notebook/sidebar counts: leak today → covered by item 4 above.
-- Mobile home-screen note widget: purge pinned notes that enter the vault on lock (`apps/mobile/app/services/note-preview-widget.ts`); do not filter the single-note accessor `db.notes.note(id)` itself (needed to open vault notes).
-- Reminders: a reminder linked to a hidden note still shows its own title in the reminders list. **Decision: block creating reminders on vault notes** (simplest, no leak) — v1 policy.
-- Export-all: keep `db.notes.exportable` unfiltered (it's reused by search sorting — filtering it would corrupt results); instead require vault unlock in the export UI.
-- Note history: already cleared when a note is locked. Sync and full backup intentionally bypass the filtered paths — hidden notes still sync and back up (required).
+### 5.5 Pairing (one-time per device pair)
+1. Existing device: Settings → "Pair new device" → generates `pairingSecret` (32 B random, 60 s TTL) and displays QR: `{"v":1,"deviceId","name","host","port","certFp","secret"}`.
+2. New device scans → connects TLS to `host:port`, verifies `certFp`, then `POST /v1/pair {deviceId, name, certFp_new, pubKey_new, proof: HMAC-SHA256(secret, certFp_new)}`.
+3. Existing device verifies proof, stores the new peer row, responds `{peer row of itself, pairToken: <32B random>, wrappedDek: XChaCha20-Poly1305(dek, key=HKDF(secret, info="mv:pair:v1"))}`.
+4. New device unwraps and stores the DEK via LocalKeyring, stores the peer row + `pairToken`, and both sides run a first sync round. The QR/secret is single-use; the displaying screen shows the new device's name+fingerprint for visual confirmation.
+5. Unpairing (Settings) deletes the peer row on both sides (best-effort remote notify `DELETE /v1/pair`); a lost device's row can be removed unilaterally. **Removing a peer does not rotate the DEK (rotation out of scope, §5.1) — the onboarding note covers this.**
 
-**Acceptance:** with vault locked — no vault note appears in any list/search/count/widget; the Vault section shows only an unlock prompt with no count. After unlock — notes appear in Vault section only. Restart app → locked again.
+### 5.6 Content-type integration for ink
+- Extend the closed union: `NoteContent.type` gains `"ink"` (`packages/core/src/types.ts:396,704`). Compile with exhaustiveness checking and fix **every** switch site (grep anchor: `ContentType`); default behavior for ink at text-centric sites: title-only (search-index empty string, preview = "✍ Handwritten entry", clipper/web-extension skip).
+- FTS: index ink content as empty string (mirror the locked-notes pattern, `packages/core/src/database/fts.ts:48`); titles remain searchable. (Accepted v1 regression, §2.)
+- **Note history:** disabled for ink entries in v1 (sessions are append-mostly and every version is a full blob — cost without benefit). Implementation: `noteHistory` skips content type `ink`. Typed entries keep history unchanged.
+- Word/character counts, Markdown/HTML export paths: ink returns empty/placeholder; PDF/PNG export per §6.6.
+- DB migration in §5.7.
 
-### F5 — LAN P2P Sync (the core new engineering)
+### 5.7 Database migrations (one migration, `CURRENT_DATABASE_VERSION` bump; applies to all three SQLite backends via the existing migration framework `packages/core/src/database/migrations.ts`)
+1. `ALTER TABLE notes ADD COLUMN journalDate TEXT` + index `notes_journalDate` (§4.1).
+2. `CREATE TABLE sync_peers (...)` per §5.4.5.
+3. `kv` entries for LocalKeyring wrapped DEK (§5.1) — written by code, no DDL.
+4. Content type `"ink"` is data-level (no DDL); the type union + validators updated in code.
 
-**Requirement:** any two of the three devices, on the same Wi-Fi, discover each other and sync automatically with zero interaction after a one-time pairing. No hub required; phone↔tablet syncs with the PC off. Latency: seconds when both apps are foregrounded; best-effort otherwise. Later, the same data layer can sync through a self-hosted server instead/additionally.
+### 5.8 Logging
+Existing `packages/logger` retained. Rules: level `info` default; logs live in app-private storage, rotate at 5 MB × 3 files; **never log note titles, content, stroke data, keys, cursors' item payloads, or peer tokens** — an automated test greps a generated log corpus for seeded canary strings (a known title/phrase written during the test) and fails on any hit. No log ever leaves the device.
 
-**Chosen architecture (decision from comparative research — see §8 Alternatives):** **Embedded peer endpoint** — keep Notesnook's collector/merger, replace the SignalR transport with a small LAN protocol.
-
-**Why this wins:** sync items are already opaque encrypted blobs with per-item `dateModified` LWW merging plus conflict-flagging for note content (`packages/core/src/api/sync/merger.ts`) — that merge logic is symmetric and works peer-to-peer unchanged. Every building block is actively maintained (verified July 2026), and no rewrite of the encryption or data model is needed. Alternatives were rejected on maintenance risk or model mismatch (§8).
-
-**Design:**
-
-1. **`SyncEndpoint` abstraction (the future-VPS seam).** Define in `packages/core`: `pull(sinceCursor) → SyncTransferItem[]`, `push(items)`. Implementations: `LanPeerEndpoint` (Phase 3) and `RemoteServerEndpoint` (Phase 5, wrapping the existing SignalR client or a thin relay). Switching to a VPS later = enabling the second endpoint in settings.
-2. **Discovery:** DNS-SD service `_mindvault._tcp` on the LAN. Android: `react-native-zeroconf` (active, v0.14.0, Dec 2025). Windows/Electron: `bonjour-service` (active, pure-JS). Each device advertises `{deviceId, port}` and browses for peers.
-3. **Transport:** TLS over TCP. Android server socket via `react-native-tcp-socket` (active, v6.4.1, Jan 2026); Electron uses Node `https`/`ws` natively. Protocol: `GET /pull?since=<ts>` streams `collector.collect()` batches; `POST /push` feeds `merger.mergeItem()`; `GET /attachment/:hash` serves content-addressed encrypted attachment chunks (replaces the S3 presigned-URL path on LAN).
-4. **Per-peer cursors:** each device stores, per paired peer, the max acknowledged `dateModified` (modeled on the existing `sync/devices.ts` device-state tracking), persisted in the encrypted DB. Any pair of devices converges; transitive sync through the third device also converges (LWW is order-independent for metadata; content conflicts get flagged for manual resolution exactly as today).
-5. **Pairing/trust:** one-time QR key exchange (Syncthing/Signal-style). Device A shows a QR encoding its device ID + public key; B scans, both pin each other; connections are mutually authenticated TLS thereafter. Unknown peers are refused. Note: payloads are DEK-encrypted regardless — pinning defends against junk injection, not confidentiality. The data encryption key itself is transferred once during pairing (QR or manual phrase), since there is no cloud account to derive it from.
-6. **Sync triggers:** on app foreground, on Wi-Fi connect, on local DB change (debounced ~5 s, mirroring the existing `auto-sync.ts`), and periodic WorkManager wakes on Android. **Android background constraint (researched):** no 24/7 listening socket — Android 15 caps `dataSync` foreground services at 6 h/24 h, but the `connectedDevice` FGS type is exempt from that cap; use it only during active sync windows. Practical model: whichever device is in use initiates; a backgrounded device syncs opportunistically. This satisfies "quick sync when connected to the same Wi-Fi" without battery abuse.
-7. **Clock skew:** LWW depends on device clocks. The existing 60 s merge threshold absorbs jitter; add a pairing-time clock-sanity check (warn if peers differ > 2 min) since NTP is unavailable offline.
-8. **Windows firewall:** first run must register an inbound allow rule (private networks) for the sync port and UDP 5353 — one-time guided step in onboarding.
-
-**Acceptance:** create a note on the phone → appears on the foregrounded tablet within ~10 s on the same Wi-Fi, PC powered off, airplane-mode-with-Wi-Fi on both (no mobile data). Edit the same note on two offline devices → conflict flagged, both versions preserved, manual resolution UI works (existing feature). Kill and restart any device mid-sync → no data loss, cursors resume.
-
-### F6 — Pen-First Ink Editor (THE primary writing surface) + Optional Handwriting → Text
-
-**Priority statement (user decision, 2026-07-12):** most journal content will be handwritten with the S Pen and kept as ink. Pen latency and ink quality are a **must-have on par with privacy and sync**; rich-text features are explicitly sacrificable. Consequently, on Android the primary editing surface is a **native ink editor** — not the WebView. Best-in-class pen performance is physically impossible inside a WebView (JS/compositor tax on every stroke sample); the ink path must be native.
-
-Neither stock Notesnook nor its editor has any ink/drawing support (verified) — this is the largest net-new feature alongside P2P sync.
-
-#### F6a — Native ink surface (primary, Android)
-
-**Chosen stack (research-verified July 2026):** Google's **Jetpack Ink API (`androidx.ink`)** — first stable **1.0.0 shipped 2025-12-17** (latest 1.1.0-alpha04); it is the same production ink engine behind markup in Google Docs, Circle to Search, Photos, Drive, and Keep. Its underpinnings are also stable now: `androidx.graphics:graphics-core` 1.0.4 (front-buffer rendering — wet ink draws directly to the scanned-out buffer, skipping the normal compositing pipeline) and `androidx.input:input-motionprediction` 1.0.0 (Kalman-filter stylus prediction that masks perceived input lag). Do **not** hand-roll the low-latency stack — Ink orchestrates all of it.
-
-**Architecture:**
-- **`InProgressStrokesView`** (a plain Android View from `ink-authoring`) wrapped as a **React Native Fabric Native Component** — the documented RN 0.82 mechanism for hosting native views. All stylus `MotionEvent` handling, front-buffered wet rendering, and prediction stay in native code; **the RN JS thread never touches the per-sample stroke path.** JS only sends commands (new page, brush, undo, export) and receives serialized stroke bytes back.
-- High-frequency S Pen input: drain batched samples via `MotionEvent.getHistorical*()` + `View.requestUnbufferedDispatch()`; capture 4096-level pressure and tilt (delivered to third-party apps as standard MotionEvent axes on the Tab S9/S23 Ultra). Stylus-only input on the canvas = automatic palm rejection.
-- Dry (finished) strokes render via Ink's `CanvasStrokeRenderer`/`ViewStrokeRenderer`; hit-testing/per-stroke erase via `ink-geometry`.
-- **Storage:** canonical stroke data = a portable format we own (per stroke: brush params + `(x, y, pressure, tilt, t)` point array; Ink's `ink-storage` binary serialization can be kept as an Android-side cache). The portable blob goes **inside the normal note-content blob** — so encryption at rest (F2), hidden vault (F4), LAN P2P sync (F5), backups, and history all apply to ink automatically with zero extra work. Sync moves opaque blobs and is untouched by this pivot.
-- **Desktop (Electron):** replays the portable stroke data — rendered as pressure-sensitive SVG outlines via [perfect-freehand](https://github.com/steveruizok/perfect-freehand) (MIT, actively maintained, Feb 2026). View/erase/light mouse or Windows-pen annotation (Chromium pointer events carry pressure/tilt on Windows); the PC is a reading/typing surface, not the low-latency inking surface.
-- **Journal model:** a note is a sequence of blocks — ink pages interleaved with (optional) typed-text blocks. The TipTap WebView editor is demoted to secondary: kept for typed notes and viewing (it already exists and costs nothing), **feature-frozen** otherwise.
-- Tools for v1: pen (widths/colors from Ink's stock brushes), highlighter, per-stroke eraser, undo/redo, page scroll. No shape recognition, layers, or lasso.
-
-**Latency expectation (honest):** Samsung Notes' ~2.8 ms runs on a privileged hardware pipeline no third-party SDK can access (the old S Pen ink SDK is dead; only the button/air-gesture "S Pen Remote SDK" remains). A well-tuned Ink-API surface on the Tab S9's 120 Hz panel realistically lands around **~10–25 ms perceived** (front-buffer floor ~4–16 ms + prediction; comparable measured front-buffered path: 24 ms on a 60 Hz Pixel 7). Verdict: dramatically better than any WebView/Flutter note app, within striking distance of Samsung Notes, not parity. Matching Samsung Notes exactly is declared out of scope (§2).
-
-**Known integration risks (budgeted):** (a) touch ownership — the native surface must consume stylus events directly (`requestDisallowInterceptTouchEvent`) so RN's gesture responder can't delay them; (b) SurfaceView-class layer compositing inside the RN view tree (historic z-order issues; using Ink's own view rather than a raw GLSurfaceView inherits Google's correct layer handling); (c) `androidx.ink` is young (stable only since Dec 2025) and we'd be an early third-party adopter — pin to stable 1.0.x, adopt 1.1's ByteArray storage API when it stabilizes.
-
-**Effort:** L (~4–6 weeks: Fabric component + ink module, storage format, page UI, desktop replay renderer).
-
-#### F6b — Handwriting → text (secondary, optional per entry)
-
-Samsung's self-learning on-device conversion remains available for the moments text is wanted, and conversion is **fully off-switchable**:
-- The native ink canvas is not a text field, so Samsung's handwriting-to-text IME **never triggers on it** — ink mode is inherently conversion-free; no toggle needed. System-wide, Direct Writing is a Samsung setting (S Pen → "S Pen to text").
-- For deliberate text entry by pen: Samsung Direct Writing engages on text fields, including the WebView editor — but ProseMirror has documented Samsung-IME composition bugs (newlines, dropped characters). Plan: dogfood direct input first; if flaky, add the **native `EditText` capture overlay** (rock-solid handwriting target; recognized text inserted via the existing RN↔WebView bridge, `apps/mobile/app/screens/editor/tiptap/commands.ts`). Samsung's engine adapts to the user's writing on-device; building our own recognizer stays a non-goal.
-- **Later option — search inside ink:** ML Kit **Digital Ink Recognition** (verified current: on-device, offline after a ~20 MB per-language model download, 300+ languages, no personalization) can recognize our stored stroke data on demand — enabling background transcription of ink pages into hidden searchable text without ever converting the visible ink. Scoped as a post-v1 enhancement.
-
-**Acceptance (F6):** (a) ink surface uses front-buffered rendering + motion prediction with the JS thread out of the stroke path (verified by tracing); side-by-side with Samsung Notes on the Tab S9, latency is subjectively close and never rubber-bands; (b) a freehand page captures pressure/tilt, is stored only inside the encrypted content blob, appears on the other devices after LAN sync, and renders faithfully on desktop; (c) handwriting-to-text never triggers on the ink canvas; a handwritten paragraph via the text path lands as correct text, offline.
-
-### F7 — Retained Notesnook Features (regression scope)
-
-Rich-text editor retained but feature-frozen as the secondary/typed surface (TipTap: headings, lists, tasks, tables, code, math, images, audio, attachments), notebooks/tags/colors/favorites/pinned/archive, reminders (minus vault notes, F4), full-text search (FTS5), note version history, encrypted local backups (existing `database/backup.ts` full-backup path), import/export (Markdown/HTML/PDF where already supported), dark mode/themes (bundled only — themes marketplace is removed with the cloud strip).
-
-## 6. Future Phase — Self-Hosted Server (VPS or Home Server)
-
-When the user has a VPS (or wants a LAN hub as an additional always-on peer):
-
-- **Option A (stock):** deploy `streetwriters/notesnook-sync-server` via its official docker-compose (identity, sync API, SSE, monograph, MongoDB, MinIO — ~1–2 GB RAM estimated; runs under Docker Desktop on Windows too). Caveats (researched): self-hosting is officially "alpha/unsupported"; **SMTP credentials are mandatory** (compose validation fails without them; no email-bypass switch exists) — create the account once with any working mailbox, then set `DISABLE_SIGNUPS=true`. The stock client requires a logged-in, email-confirmed account for sync (`sync/index.ts:183,120-127`); our fork will have patched this gate out for LAN P2P, so re-integrating means implementing `RemoteServerEndpoint` against the hub with a stored token.
-- **Option B (lean, preferred long-term):** run our own `LanPeerEndpoint` protocol as a small always-on Node peer on the VPS/home server — the server is just a fourth "device" with a big disk. No .NET stack, no MongoDB, no SMTP, same code path. This is the natural consequence of the `SyncEndpoint` abstraction and is recommended over Option A unless stock-server compatibility matters.
-- Off-LAN access to a VPS must go through WireGuard/Tailscale-style private networking — the app itself still never talks to the public internet unauthenticated.
-
-## 7. Delivery Plan (phased, solo dev + AI tooling, Windows + Android targets)
-
-| Phase | Deliverable | Scope | Est. effort* |
-|---|---|---|---|
-| **0. Build & baseline** | Both apps built from source and running (Electron on Windows; sideloaded APK), local-only by never logging in | Node 22.20.0, `npm run bootstrap`, Android Studio/JDK/Gradle toolchain; editor-mobile bundle build. Heaviest lift is the RN native-module build | 1–2 weeks |
-| **1. Cloud strip** | Verified zero-network app (F1) + packet-capture acceptance | F1.1–F1.9 | 1–2 weeks |
-| **2. Native ink editor (F6a)** | The pen-first writing surface: androidx.ink wrapped as a Fabric Native Component, portable stroke format, page UI, desktop replay renderer | Spike RN↔native-surface integration in week 1 (highest technical risk) | 4–6 weeks |
-| **3. Hidden vault + app-lock hardening** | F4 + F3 work item | ~8–9 files, ~110–140 LOC + Vault section UI | 1–2 weeks |
-| **4. LAN P2P sync** | F5 end-to-end across 3 devices | `SyncEndpoint` abstraction, discovery, TLS transport, per-peer cursors, QR pairing, triggers, firewall onboarding | 4–8 weeks (the big one) |
-| **5. Pen-to-text & ink search (F6b)** | `EditText` capture overlay if direct input proves flaky; optional ML Kit on-demand ink transcription for search | independent, can run in parallel with 4 | 1–2 weeks |
-| **6. VPS endpoint** | §6 Option B (or A) | when VPS exists | 1–2 weeks |
-
-*Own estimates for a solo developer working part-time with AI coding tools; Phases 2 and 4 carry the most uncertainty (native-surface integration and Android background/network edge cases respectively).
-
-Ship order rationale: the ink editor comes immediately after the cloud strip because it is the primary daily writing surface — Phases 0–2 already produce the thing the user actually journals on (single-device, manually backed up); the vault is small and lands before sync; sync risk is isolated in Phase 4; ink data is just a content blob, so nothing in Phase 2 blocks or reworks Phase 4.
-
-## 8. Alternatives Considered (research-backed rejections)
-
-| Alternative | Verdict | Reason (verified July 2026) |
+### 5.9 Performance budgets (acceptance-tested)
+| Metric | Budget | Where |
 |---|---|---|
-| **PC as LAN hub** running stock notesnook-sync-server (zero client changes) | Rejected as primary; useful as de-risking milestone / Option A later | Structurally fails "phone↔tablet with PC off"; also drags in .NET+MongoDB+MinIO+SMTP stack |
-| **cr-sqlite** (CRDT SQLite extension) | Rejected | Unmaintained — last commit Oct 2024, last release Jan 2024; unproven on encrypted DBs across Electron/RN/wasm; cell-level merging buys nothing on Notesnook's opaque encrypted content blobs |
-| **Yjs / Automerge** CRDT sync layer | Rejected | Model mismatch: CRDTs need readable structured state, Notesnook stores encrypted blobs → would force a rewrite of core + crypto. LAN transports stale (y-webrtc last commit Apr 2024, needs signaling server); Automerge wasm needs RN 0.84+ (fork is on 0.82). Revisit only if collaborative editing ever becomes a goal |
-| **Syncthing as transport** (app writes append-only encrypted change files; Syncthing-Fork replicates the folder) | Held as Plan B | Official Android app discontinued Dec 2024, but Catfriend1 fork is active (v2.1.2.0, Jul 2026). Zero networking code — but requires a sidecar app + manual device pairing (violates zero-interaction), scoped-storage friction, scan-bound latency. Adopt only if Phase 3's Android background story proves too painful |
-| **Couchbase Lite P2P / Ditto / PowerSync / ElectricSQL / iroh / p2panda** | Rejected | Respectively: RN plugin lacks P2P; commercial/closed; server-authoritative (×2); no RN binding (Kotlin-only FFI); research-grade mobile bindings |
-| **Rebuild fresh, borrowing parts** (e.g. from Joplin/other OSS) | Rejected | Notesnook already provides encrypted-at-rest storage, app lock, vault, sync collector/merger, and a mature editor; every gap identified is additive. Joplin's E2EE and vault story is weaker; nothing offers a better starting ratio of kept-vs-built |
+| Wet-ink latency (pen to pixel, perceived) | subjectively close to Samsung Notes side-by-side; front-buffered + predicted path verified by systrace | Tab S9 |
+| Cold start → Today view interactive | ≤ 2.5 s | Tab S9, release build |
+| Open ink entry with 10 000 strokes | ≤ 700 ms to first full render | Tab S9 |
+| Full sync round, 1 000 changed items | ≤ 30 s | any pair, same Wi-Fi |
+| Ink storage | a dense handwritten page ≈ 100–300 KB JSON pre-encryption (own estimate) — no hard cap; monitor only | — |
 
-## 9. Risks
+### 5.10 Build, distribution, update skew
+- Release builds: PC produces the Electron installer and the signed APK (single release script; version = one shared semver). Install on Android by sideload (file transfer + package installer; developer options already required once).
+- **Skew safety is enforced by §5.4.3** (identical `pv` + `schema` or no sync): updating devices one-by-one is safe — they simply don't sync until versions match, and the UI says so.
 
+## 6. Feature Work Packages (what to build, referencing all specs above)
+
+### 6.1 F-STRIP — Offline hardening
+As specified in v3, all items verified against source: neutralize login/account UI; blank the 7 hosts in `packages/core/src/utils/constants.ts`; stub `apps/desktop/src/utils/autoupdater.ts:26-28`; drop `react-native-check-version`; remove subscriptions/IAP/pricing (`subscriptions.ts`, `pricing.ts`, `offers.ts`, `circle.ts`, Paddle, `react-native-iap`) and monographs (`monographs.ts` + publish UI) and the bug-report uploader (`debug.ts`) and announcements/version fetch (`api/index.ts:483,487`); Android debug network-security config restricting cleartext to RFC1918. **Plus (Correction 1): LocalKeyring §5.1 and the crypto call-site redirection — sized M, not S.** No telemetry exists to remove (verified).
+
+### 6.2 F-LOCK — App lock
+Adopt existing implementation; make it mandatory in onboarding (§4.3); default lock-on-background timeout: 1 min mobile, 5 min desktop (both user-adjustable in the existing settings).
+
+### 6.3 F-VAULT — Hidden vault
+Implementation exactly as the file-level plan of v3 (verified choke points): predicate injection in `packages/core/src/collections/notes.ts` getters (`all/favorites/pinned/archived/conflicted`), `RelationsArray.selector` (`collections/relations.ts:275`, with the `reference.type === "vault"` carve-out), `excludedIds` in the 4 `api/lookup.ts` functions, counts in `collections/notebooks.ts`; cached `defaultVaultId` in `collections/vaults.ts`; refresh on `EVENTS.vault*`; subquery predicate (not id-lists) to avoid the 200-parameter limit; widget purge on lock; `db.notes.note(id)` stays unfiltered; export-all gated on vault unlock in UI (never filter `exportable` — it backs search sorting, `lookup.ts:276`); **reminders cannot be created on vault notes** (creation-time check). Vault password separate, no biometric path (D5). Journal integration: vaulted entries also vanish from Today/calendar views and day-dots (these run through the same filtered selectors — verify in acceptance).
+
+### 6.4 F-INK — Native ink editor
+androidx.ink stable 1.0.x: `InProgressStrokesView` wrapped as an RN Fabric Native Component; `MotionEvent.getHistorical*` + `requestUnbufferedDispatch`; dry rendering via `CanvasStrokeRenderer`; per-stroke erase via `ink-geometry`; JS thread out of the stroke path (commands/serialized bytes only); `requestDisallowInterceptTouchEvent` for touch ownership. Serialization to/from `mvink` (§5.2). Desktop renderer: perfect-freehand → SVG from `mvink` points (pressure honored; tilt stored-but-unused by this renderer — accepted). Editor UI per §4.2. **Week-1 spike (mandatory): Fabric embedding + front-buffer compositing inside the RN view tree on the Tab S9 — if `InProgressStrokesView` proves un-embeddable [GATE], fall back to a full-screen native Activity hosting the ink editor (RN navigates to it via intent; same mvink contract), and note it in the progress log.**
+
+### 6.5 F-PENTEXT — Handwriting→text + future ink search
+Samsung Direct Writing works on text fields (Samsung Keyboard as IME; English pack per D7); ink canvas never triggers it (not a text field). If direct input into TipTap misbehaves (documented ProseMirror/Samsung-IME bug class), build the native `EditText` capture overlay inserting via the RN↔WebView bridge (`apps/mobile/app/screens/editor/tiptap/commands.ts`).
+**Post-v1 ink search:** ML Kit Digital Ink Recognition (English model) transcribing `mvink` points into a hidden searchable text column. **[GATE — I1 compliance]:** the model must be provisioned without the app touching the internet — bundle it in the APK at build time if ML Kit supports bundled digital-ink models at implementation time; otherwise download it once on the build machine and ship it as an app asset with a documented load path; if neither is possible, the feature is dropped and titles-only search remains. The app process itself never makes the download call.
+
+### 6.6 F-EXPORT — Ink export
+Ink entry → **PDF** (vector strokes, pages paginated at 1414 u height per page ≈ A4 aspect at 1000 u width; ruled lines included only if a checkbox "include guide lines" is ticked, default off) and **PNG** (2000 px wide, one image per 1414 u page). Typed entries: existing MD/HTML/PDF unchanged. Full backup covers everything regardless (§4.5).
+
+### 6.7 F-SYNC — LAN P2P
+Everything in §5.4 + §5.5. Building blocks (maintenance verified 2026-07-12): `react-native-zeroconf` 0.14.0, `react-native-tcp-socket` 6.4.1 (TLS server), `bonjour-service` (Electron), Node `https` on desktop.
+
+### 6.8 F-WIDGET — Android home-screen widget
+Retained for typed notes; for ink entries it shows title + date + "✍" glyph only (no stroke rendering in v1). Vault purge per §6.3.
+
+## 7. Retained Notesnook Features (regression scope)
+Typed editor (TipTap, feature-frozen), notebooks/tags/colors/favorites/pinned/archive/trash (in the Notes area), reminders (except on vault notes), FTS for typed content + all titles, note history (typed only), encrypted backups, import/export for typed content, bundled themes (marketplace removed).
+
+## 8. Future Phase — Self-Hosted Endpoint
+Preferred: a headless Node "fourth peer" speaking `mvsync` v1 on the VPS/home server (always-on, big disk); off-LAN reachability via WireGuard/Tailscale only. Alternative (stock notesnook-sync-server via docker-compose: identity+sync+SSE+MinIO+MongoDB; SMTP mandatory, `DISABLE_SIGNUPS=true` after account creation; officially alpha) — only if stock-client compatibility ever matters; it would require reviving the dormant account path. Decision deferred until a VPS exists; nothing in v1 blocks either.
+
+## 9. Delivery Plan & Acceptance (each phase gates the next)
+
+| Phase | Scope | Est.* | Acceptance (all must pass) |
+|---|---|---|---|
+| **0 Build & baseline** | Build desktop (Windows) + APK from source; Node 22.20.0, `npm run bootstrap`, editor-mobile bundle, Android toolchain | 1–2 wk | Both apps run; note created/edited offline on each |
+| **1 Offline & keys** | F-STRIP incl. LocalKeyring (§5.1, §6.1); D6 backups (§4.5) | 2–4 wk | 24 h packet capture on all 3 platforms: zero non-LAN traffic; canary-string log audit passes; encrypted backup + restore drill passes; every persisted file is ciphertext (`strings` audit) |
+| **2 Ink editor** | F-INK (§6.4) + journal model (§4.1–4.2) incl. migration §5.7(1) | 4–6 wk | Perf budgets §5.9 rows 1–3; ruled/blank toggle; dark-theme color mapping; mvink round-trip Android↔desktop renders equivalently (golden-file tests) |
+| **3 Vault & lock** | F-VAULT + F-LOCK (§6.2–6.3) | 1–2 wk | Locked vault: zero trace in any list/search/count/widget/Today/calendar; restart relocks; separate password enforced; no biometric path to vault |
+| **4 P2P sync** | F-SYNC (§6.7) incl. migrations §5.7(2) | 4–8 wk | 3-device convergence with PC off (phone↔tablet), zero taps, <10 s foreground latency; ink concurrent-edit produces D4 time-ordered page on all devices (golden merge tests §5.3, incl. commutativity/associativity property tests); typed conflict flags as today; kill mid-sync → no loss, cursors resume; clock-skew banner at >120 s; version-skew refusal works; perf budget §5.9 row 4 |
+| **5 Pen-to-text & export** | F-PENTEXT (v1 part), F-EXPORT, F-WIDGET | 1–2 wk | Handwritten paragraph → correct text offline; PDF/PNG export golden files |
+| **6 Later** | Ink search (§6.5 gate), self-hosted endpoint (§8) | — | — |
+
+*Own estimates, solo dev + AI tooling. Phases 2 and 4 carry the highest uncertainty (native-surface embedding; Android background/network edge cases).
+
+## 10. Risks (updated post-review)
 | Risk | Sev. | Mitigation |
 |---|---|---|
-| Android background sync flakiness (Doze, FGS limits, NSD quirks) | **High** | `connectedDevice` FGS during sync windows only; foreground-initiated model; WorkManager wakes; Syncthing-folder Plan B kept warm |
-| RN ↔ native ink surface integration (touch ownership vs RN gesture responder; SurfaceView-class layer compositing inside the RN view tree) | **High** | Use Ink's own `InProgressStrokesView` (inherits Google's correct layer handling) rather than a raw GLSurfaceView; `requestDisallowInterceptTouchEvent`; spike this in week 1 of Phase 2 before committing |
-| `androidx.ink` is young (first stable Dec 2025) — early third-party adopter | Med | Pin stable 1.0.x; the canonical stroke format is our own portable one, so a renderer swap can never lose data |
-| Perceived latency still noticeably behind Samsung Notes | Med | Front-buffer + motion prediction is the third-party ceiling (~10–25 ms est. vs Samsung's privileged ~2.8 ms); acceptance bar is "subjectively close side-by-side", set as explicit non-goal to match exactly |
-| S Pen direct-to-text corrupts text in ProseMirror (documented bug class) | Med (text path is secondary now) | `EditText` overlay is a known-good pattern, budgeted in Phase 5 |
-| Solo-maintained fork drifts from upstream (security fixes) | Med | Keep changes additive/behind seams (`SyncEndpoint`, vault predicate, host config); pin a fork point; cherry-pick upstream security fixes; crypto core is untouched |
-| Data loss from a sync bug (worst outcome for a journal) | Med | Merger is reused, not rewritten; conflicts flag rather than overwrite; automatic daily encrypted local backups with retention on every device before Phase 3 ships; restore drill in acceptance tests |
-| LWW clock skew merges the wrong direction | Low-Med | Existing 60 s threshold; pairing-time clock check; content conflicts are flagged, not silently merged |
-| RN 0.82 native build toolchain pain (sodium, quick-sqlite, mmkv…) | Med | Phase 0 exists precisely to burn this down first; all modules are open-source and currently building upstream |
-| Vault side-channel leak via a forgotten query path | Low | Full side-channel checklist in F4 baked into acceptance tests |
-
-## 10. Acceptance Summary (v1 "done")
-
-1. Packet capture on all 3 devices over 24 h shows only mDNS + paired-peer TLS traffic.
-2. Every persisted file is ciphertext (spot-check with `strings`); DB unopenable without key; app lock wraps the DB key.
-3. Vault locked → zero trace of secret notes anywhere in the UI or search; unlock → visible only in Vault section; relocks on restart/timeout.
-4. Phone-only + tablet-only edit while apart → both converge within seconds of joining the same Wi-Fi, PC off, zero taps; same-note concurrent edits produce a resolvable conflict, never silent loss.
-5. Ink writing on the Tab S9 runs front-buffered with motion prediction, the JS thread stays out of the stroke path, and side-by-side with Samsung Notes it feels subjectively close; freehand pages are stored only as encrypted blobs, sync across devices, and render faithfully on desktop. Optional handwriting-to-text still yields correct text, fully offline.
-6. Daily encrypted backup exists on each device and a restore drill succeeds.
+| LocalKeyring misses a crypto call-site still gated on `db.user` → runtime throw or, worse, silent plaintext | **High** | Exhaustive grep list in §5.1; integration test that runs collector+attachment+vault flows with no user object; I2 `strings` audit |
+| RN ↔ native ink surface embedding (touch ownership, front-buffer compositing) | **High** | Mandatory week-1 spike; [GATE] fallback to full-screen native Activity (§6.4) |
+| D4 merge yShift edge cases (annotating above earlier writing after a device switch) | Med | Property-based tests: commutativity, associativity, idempotence, no-overlap invariant; per-device running-shift rule (§5.3.3) preserves an author's own layout |
+| Android background sync flakiness (Doze/FGS/NSD) | Med-High | Foreground-initiated model, `connectedDevice` FGS windows, WorkManager periodic; Syncthing-folder Plan B stays documented |
+| `androidx.ink` youth (stable Dec 2025) | Med | Pin 1.0.x; mvink is ours — renderer swap can never lose data |
+| Clock skew corrupts LWW/D4 ordering | Med | 120 s banner (§5.4.7); no NTP offline — user-visible, not silent |
+| Fork drift from upstream security fixes | Med | Changes are additive behind seams (LocalKeyring, `collectSince`, content type, vault predicate); pin fork point; cherry-pick |
+| ML Kit model unobtainable offline | Low (post-v1) | [GATE] §6.5: bundle → asset-sideload → drop, in that order |
 
 ---
-
-*Sources: code-level analysis of the Notesnook monorepo (file references inline); maintenance status of react-native-zeroconf, react-native-tcp-socket, bonjour-service, cr-sqlite, Yjs/y-webrtc, Automerge, Syncthing/Catfriend1 fork, iroh, p2panda verified against GitHub/npm on 2026-07-12; Android FGS limits from developer.android.com (Android 15 behavior changes / FGS timeout docs); S Pen/Direct Writing behavior from Android stylus-input docs, Chromium stylus_handwriting component, AndroidPolice coverage, and ProseMirror/Obsidian/CKEditor issue trackers; notesnook-sync-server self-hosting from its README, docker-compose, and issue #20; pen stack verified 2026-07-12: androidx.ink 1.0.0 stable 2025-12-17 / 1.1.0-alpha04 (developer.android.com/jetpack/androidx/releases/ink), graphics-core 1.0.4 stable, input-motionprediction 1.0.0 stable, ML Kit Digital Ink Recognition (developers.google.com/ml-kit/vision/digital-ink-recognition, on-device/offline, no personalization), perfect-freehand (github.com/steveruizok/perfect-freehand, active Feb 2026), Samsung S Pen SDK status from developer.samsung.com (only the Remote SDK survives), front-buffered latency measurement from tbuckley.com/writing/stylus-latency (24 ms, Pixel 7 @ 60 Hz). Effort estimates, the ~10–25 ms latency projection, and the cr-sqlite-on-encrypted-DB risk call are own assessments.*
+*Provenance: architecture and all file references verified against the Notesnook clone (core v8.1.3) on 2026-07-12; corrections C1/C2 verified in `collector.ts`, `user-manager.ts`, `sql-collection.ts`; ecosystem facts (androidx.ink 1.0.0 stable 2025-12-17; graphics-core 1.0.4; input-motionprediction 1.0.0; react-native-zeroconf 0.14.0; react-native-tcp-socket 6.4.1; cr-sqlite unmaintained since 2024-10; Syncthing-Fork active v2.1.2.0; ML Kit Digital Ink current, no personalization; Samsung S Pen SDK discontinued except Remote SDK; notesnook-sync-server alpha, SMTP mandatory) verified via web on 2026-07-12. Own estimates: all effort figures, the 10–25 ms latency projection, storage-per-page figure. The mvink format, merge algorithm, and mvsync protocol are original normative specifications of this document.*
