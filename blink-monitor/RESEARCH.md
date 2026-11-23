@@ -15,7 +15,7 @@ Four parallel research agents (running Claude Opus 4.8) each investigated one do
 3. Intel NPU runtimes on Windows
 4. Lightweight always-on app shells
 
-Their outputs were then **independently re-verified** (by Fable 5, the orchestrating model) for every load-bearing claim: licenses were confirmed from actual LICENSE files, model files were downloaded and inspected (input/output tensor shapes read from the ONNX graph itself), crate versions confirmed against crates.io API, and the two decision-critical technical claims (Tauri WebView2 teardown; Windows ML NPU hardware support) confirmed from primary sources. Section 6 is the full verification ledger.
+Their outputs were then **independently re-verified** (by the orchestrating model) for every load-bearing claim: licenses were confirmed from actual LICENSE files, model files were downloaded and inspected (input/output tensor shapes read from the ONNX graph itself), crate versions confirmed against crates.io API, and the two decision-critical technical claims (Tauri WebView2 teardown; Windows ML NPU hardware support) confirmed from primary sources. Section 6 is the full verification ledger.
 
 ---
 
@@ -36,7 +36,7 @@ Their outputs were then **independently re-verified** (by Fable 5, the orchestra
 
 ### Detection engines worth mining
 
-| Engine | License (Fable-verified) | Relevance |
+| Engine | License (verified from LICENSE file) | Relevance |
 |---|---|---|
 | [OpenSeeFace](https://github.com/emilianavt/OpenSeeFace) | **BSD-2-Clause** ([LICENSE](https://github.com/emilianavt/OpenSeeFace/blob/master/LICENSE)) | Lightweight ONNX landmark tracker, documented <100% of one core at 30 fps; proven Windows face tracking. Good reference for tracking-loop design; its models are larger than our chosen pipeline needs. |
 | [MediaPipe Face Landmarker v2](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) | **Apache-2.0** ([LICENSE](https://github.com/google-ai-edge/mediapipe/blob/master/LICENSE)) | 478 landmarks + 52 blendshapes incl. `eyeBlinkLeft`/`eyeBlinkRight`. The designated **v2 alternative backend** (see PRD §20); not primary because the MediaPipe graph can't target the Intel NPU and pulls in a large C dependency. |
