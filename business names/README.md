@@ -1,5 +1,7 @@
 # Business Names — Company Naming Research
 
+**Start here: [`00-RESEARCH-HANDOFF.md`](00-RESEARCH-HANDOFF.md)** — the master handoff (2026-11-23): brief, methodology, full rulebook, complete candidate ledger with verdicts, conclusion, and a playbook + `check_domains.py` script for future name research. A session-state note also lives at `../handoff/handoff_business_naming.md`.
+
 Research and naming work (2026-07-13) for a planned **Germany-based B2B parent company** that builds custom AI applications for businesses across sectors, with the ultimate mission of **driving AI adoption in the European energy sector**. The founder is an Indian citizen and renewable-energy engineer living in Germany.
 
 ## Naming brief
